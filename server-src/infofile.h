@@ -73,6 +73,10 @@ typedef struct info_s {
 #	define FORCE_NO_BUMP	4	/* force no-bump at next run */
     perf_t  full;
     perf_t  incr;
+    double comp_avgs_full[64];
+    double comp_avgs_incr[64];
+    int nhist_full;
+    int nhist_incr;
     stats_t inf[DUMP_LEVELS];
     int last_level, consecutive_runs;
     history_t history[NB_HISTORY+1];
@@ -84,6 +88,8 @@ void close_infofile(void);
 
 char *get_dumpdate(info_t *info, int level);
 double perf_average(double *array, double def);
+void setup_perf_hist(info_t * info, int level);
+double perf_hist(info_t *info, int level, off_t size, double def);
 int get_info(char *hostname, char *diskname, info_t *info);
 int put_info(char *hostname, char *diskname, info_t *info);
 int del_info(char *hostname, char *diskname);

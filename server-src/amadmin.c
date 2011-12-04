@@ -49,6 +49,8 @@ int main(int argc, char **argv);
 void usage(void);
 static void estimate(int argc, char **argv);
 static void estimate_one(disk_t *dp);
+static void perfhist(int argc, char **argv);
+static void perfhist_one(disk_t *dp);
 void force(int argc, char **argv);
 void force_one(disk_t *dp);
 void unforce(int argc, char **argv);
@@ -140,6 +142,8 @@ static const struct {
 	T_(" [<hostname> [<disks>]* ]* # Export curinfo database to stdout.") },
     { "import", import_db,
 	T_("\t\t\t\t # Import curinfo database from stdin.") },
+    { "perfhist", perfhist,
+	T_(" [<hostname> [<disks>]* ]*\t# Output compression rate histogram") },
 };
 #define	NCMDS	(int)(sizeof(cmdtab) / sizeof(cmdtab[0]))
 
@@ -396,6 +400,58 @@ estimate(
     else
 	for(dp = diskq.head; dp != NULL; dp = dp->next)
 	    estimate_one(dp);
+}
+
+
+/* ----------------------------------------------- */
+
+static void
+perfhist_one(
+    disk_t *	dp)
+{
+    char   *hostname = dp->host->hostname;
+    char   *diskname = dp->name;
+    char   *qhost = quote_string(hostname);
+    char   *qdisk = quote_string(diskname);
+    info_t  info;
+    double   *comp_avgs;
+    int     level, nhist, i;
+
+    get_info(hostname, diskname, &info);
+
+    for(level=0;level<=1;level++) {
+	setup_perf_hist(&info, level);
+        comp_avgs = (level==0) ? info.comp_avgs_full : info.comp_avgs_incr;
+        nhist = (level==0) ? info.nhist_full : info.nhist_incr;
+
+	if(nhist) {
+	    printf("%s %s %d", qhost, qdisk, level);
+	    for(i=0;i<64;i++) {
+		if(comp_avgs[i] > 0.0) printf(" %d(%f)",i,comp_avgs[i]);
+	    }
+	    printf("\n");
+	} else {
+	    printf("%s %s %d no history\n", qhost, qdisk, level);
+	}
+    }
+
+    amfree(qhost);
+    amfree(qdisk);
+}
+
+
+static void
+perfhist(
+    int		argc,
+    char **	argv)
+{
+    disk_t *dp;
+
+    if(argc >= 4)
+	diskloop(argc, argv, "perfhist", perfhist_one);
+    else
+	for(dp = diskq.head; dp != NULL; dp = dp->next)
+	    perfhist_one(dp);
 }
 
 
