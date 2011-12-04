@@ -998,6 +998,14 @@ sub output_details
 		$self->tounits($outsize), $disp_unit)
               if (defined $est->{'ckb'} && ($est->{ckb} * .9 > $outsize)
                 && ($est->{ckb} - $outsize > 1.0e5));
+
+            push @$notes,
+              "small estimate: $hostname $qdisk $dle->{estimate}{level}",
+              sprintf('                est: %.0f%s    out %.0f%s',
+                $self->tounits($est->{ckb}), $disp_unit,
+		$self->tounits($outsize), $disp_unit)
+              if (defined $est->{'ckb'} && ($est->{ckb} * 1.1 < $outsize)
+                && ($outsize - $est->{ckb} > 1.0e5));
         }
     }
 
