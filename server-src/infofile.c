@@ -687,11 +687,11 @@ perf_hist(
     binh++;
     while((comp_avg <= 0.0) && ((binl > 0) || (binh < 63))) {
 	n = 0;
-	if(binl >= 0 && comp_avgs[binl] >= 0.0) {
+	if(binl >= 0 && comp_avgs[binl] > 0.0) {
 	    comp_avg += comp_avgs[binl];
 	    n++;
 	}
-	if(binh <= 63 && comp_avgs[binh] >= 0.0) {
+	if(binh <= 63 && comp_avgs[binh] > 0.0) {
 	    comp_avg += comp_avgs[binh];
             n++;
 	}
