@@ -424,6 +424,22 @@ device-property "S3_SECRET_KEY" "agphc2Q7Zmxragphc2RmO2xragpzZGY7a2xqCgr"
 <!-- PLEASE KEEP THIS LIST IN ALPHABETICAL ORDER -->
 <variablelist>
  <!-- ==== -->
+ <varlistentry><term>CLIENT_ID</term><listitem>
+(read-write) The client_id for oauth2.
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>CLIENT_SECRET</term><listitem>
+(read-write) The client_secret for oauth2.
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>CREATE-BUCKET</term><listitem>
+(read-write) Default: yes. If amanda create/delete the bucket.
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>REFRESH_TOKEN</term><listitem>
+(read-write) The refresh-token for oauth2.
+</listitem></varlistentry>
+ <!-- ==== -->
  <varlistentry><term>MAX_RECV_SPEED</term><listitem>
 (read-write) Maximum speed, in bytes per second, that this device will receive
 data from S3.  If the average speed exceeds this value, the device will stop
@@ -436,12 +452,38 @@ data to S3.  If the average speed exceeds this value, the device will stop
 writing long enough to bring the average below this value.
 </listitem></varlistentry>
  <!-- ==== -->
+ <varlistentry><term>S3_MULTI_DELETE</term><listitem>
+(read-write) If the server support the multi delete protocol (only Amazon S3),
+default is "YES" for "S3" and "AWS4" STORAGE_API, default in "NO" for all
+others STORAGE_API.
+</listitem></varlistentry>
+ <!-- ==== -->
  <varlistentry><term>NB_THREADS_BACKUP</term><listitem>
 (read-write) The number of thread that send data to the s3 device, higher value can provide more throutput.
 </listitem></varlistentry>
  <!-- ==== -->
  <varlistentry><term>NB_THREADS_RECOVERY</term><listitem>
 (read-write) The number of thread that read data from the s3 device, higher value can provide more throutput.
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>OPENSTACK_SWIFT_API</term><listitem>
+ (read-write) Deprecated, set "STORAGE_API to "SWIFT-1.0".
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>PROXY</term><listitem>
+ (read-write) The proxy hostname or IP in the format "host[:port]".
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>PASSWORD</term><listitem>
+(read-write) The password (for swift v2).
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>PROJECT-ID</term><listitem>
+(read-write) The projectid (for google).
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>REUSE-CONNECTION</term><listitem>
+(read-write) Default: YES. Set it to "NO" if reusing a connection cause some bug, this is sometime the case with big block size.
 </listitem></varlistentry>
  <!-- ==== -->
  <varlistentry><term>S3_ACCESS_KEY</term><listitem>
@@ -487,10 +529,24 @@ for the most up-to-date list.
 </listitem></varlistentry>
  <!-- ==== -->
  <varlistentry><term>S3_STORAGE_CLASS</term><listitem>
-(read-write) Storage class for new objects, currently one of "STANDARD" (the default)
-or "REDUCED_REDUNDANCY" (cheaper, but less redundant).  See
-<ulink url="http://docs.amazonwebservices.com/AmazonS3/latest/dev/index.html?DataDurability.html" />
-for the most up-to-date list.
+(read-write) Storage class for new objects.
+<variablelist remap='TP'>
+<varlistentry>
+<term>S3 compatible</term>
+<programlisting>
+    STANDARD
+    REDUCED_REDUNDANCY
+</programlisting>
+</varlistentry>
+<varlistentry>
+<term>Google storage</term>
+<programlisting>
+    STANDARD
+    DURABLE_REDUCED_AVAILABILITY
+    NEARLINE
+</programlisting>
+</varlistentry>
+</variablelist>
 </listitem></varlistentry>
  <!-- ==== -->
  <varlistentry><term>S3_SSL</term><listitem>
@@ -503,6 +559,35 @@ for the most up-to-date list.
  <!-- ==== -->
  <varlistentry><term>S3_USER_TOKEN</term><listitem>
 (read-write) This property specifies the user token for Amanda Enterprise Edition customers.
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>STORAGE_API</term><listitem>
+ (read-write) Which API to use for the cloud:
+<programlisting>
+  S3            Amazon S3 AWS Signature Version 2
+  AWS4          Amazon S3 AWS Signature Version 4
+  SWIFT-1.0     Openstack swift v1.0
+  SWIFT-2.0     Openstack swift v2.0
+  OAUTH2        Google
+  CASTOR        Caringo CAStor
+</programlisting>
+The default is AWS4 if S3-HOST end with '.amazonaws.com', otherwise it is S3.
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>TENANT_ID</term><listitem>
+(read-write) The tenant_id (for swift v2).
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>TENANT_NAME</term><listitem>
+(read-write) The tenant_name (for swift v2).
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>TIMEOUT</term><listitem>
+(read-write) Add a timeout to all transfer to the cloud, default is 0, which is no timeout.
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>USERNAME</term><listitem>
+(read-write) The username (for swift v2).
 </listitem></varlistentry>
  <!-- ==== -->
  <varlistentry><term>VERBOSE</term><listitem>
@@ -629,6 +714,11 @@ access the NDMP server.  The default for both is "ndmp".</para>
 
 <!-- PLEASE KEEP THIS LIST IN ALPHABETICAL ORDER -->
 <variablelist>
+ <!-- ==== -->
+<varlistentry><term>INDIRECT</term><listitem>
+(read-write) The default in "yes". You can set it to "no" if the ndmp server
+allow to set a window length to 0.
+</listitem></varlistentry>
  <!-- ==== -->
 <varlistentry><term>NDMP_AUTH</term><listitem>
 (read-write) Authentication method to use to connect to the NDMP server.  One of
@@ -774,6 +864,7 @@ environment variable.</para>
 
 <seealso>
 <manref name="amanda.conf" vol="5"/>,
+<manref name="amanda-changers" vol="7"/>,
 </seealso>
 
 </refentry>

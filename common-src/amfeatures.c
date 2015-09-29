@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -165,6 +166,8 @@ am_init_feature_set(void)
 	am_add_feature(f, fe_amrecover_receive_unfiltered);
 	am_add_feature(f, fe_application_client_name);
 	am_add_feature(f, fe_script_client_name);
+	am_add_feature(f, fe_dumptype_property);
+	am_add_feature(f, fe_sendbackup_state);
     }
     return f;
 }
@@ -458,4 +461,11 @@ bad:
     g_warning("Bad feature string '%s'", orig);
     am_release_feature_set(f);
     return NULL;
+}
+
+am_feature_t *
+am_features(
+    am_feature_t *f)
+{
+    return f;
 }

@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -39,9 +40,9 @@ typedef struct header_s {
 #define HEADER_SIZE (SIZEOF(header_t))
 
 typedef struct record_s {
-    uint16_t filenum;
-    uint16_t attrid;
-    uint32_t size;
+    guint16  filenum;
+    guint16  attrid;
+    guint32  size;
 } record_t;
 #define RECORD_SIZE (SIZEOF(record_t))
 #define MAX_RECORD_DATA_SIZE (4*1024*1024)
@@ -75,37 +76,76 @@ typedef struct record_s {
  * writing straight out of the user's buffers? */
 #define WRITE_BUFFER_SIZE (512*1024)
 
+typedef struct amar_file_attr_handling_s {
+    guint16  filenum;
+    guint16  attrid;
+    int      fd;
+} amar_file_attr_handling_t;
+
+typedef struct handling_params_s {
+    /* parameters from the user */
+    gpointer user_data;
+    amar_attr_handling_t *handling_array;
+    amar_file_attr_handling_t *handling_file_attr_array;
+    amar_file_start_callback_t file_start_cb;
+    amar_file_finish_callback_t file_finish_cb;
+    amar_done_callback_t done_cb;
+    GError **error;
+
+    /* tracking for open files and attributes */
+    GSList *file_states;
+
+    /* read buffer */
+    gchar *buf;
+    gsize buf_size; /* allocated size */
+    gsize buf_len; /* number of active bytes .. */
+    gsize buf_offset; /* ..starting at buf + buf_offset */
+    gboolean got_eof;
+    gboolean just_lseeked; /* did we just call lseek? */
+    event_handle_t *event_read_extract;
+} handling_params_t;
+
 struct amar_s {
     int       fd;		/* file descriptor			*/
     mode_t    mode;		/* mode O_RDONLY or O_WRONLY		*/
-    uint16_t  maxfilenum;	/* Next file number to allocate		*/
+    guint16   maxfilenum;	/* Next file number to allocate		*/
     header_t  hdr;		/* pre-constructed header		*/
     off_t     position;		/* current position in the archive	*/
-    GHashTable *files;		/* List of all amar_file_t	*/
-    gboolean  seekable;		/* does lseek() work on this fd? */
+    GHashTable *files;		/* List of all amar_file_t		*/
+    gboolean  seekable;		/* does lseek() work on this fd?	*/
 
     /* internal buffer; on writing, this is WRITE_BUFFER_SIZE bytes, and
      * always has at least RECORD_SIZE bytes free. */
-    gpointer buf;
+    gchar *buf;
     size_t buf_len;
     size_t buf_size;
+    handling_params_t *hp;
 };
 
 struct amar_file_s {
-    amar_t *archive;		/* archive for this file	*/
-    gint             filenum;		/* filenum of this file; gint is required by hash table */
-    GHashTable       *attributes;	/* all attributes for this file */
+    amar_t     *archive;	/* archive for this file	*/
+    off_t       size;		/* size of the file             */
+    gint        filenum;	/* filenum of this file; gint is required by hash table */
+    GHashTable  *attributes;	/* all attributes for this file */
 };
 
 struct amar_attr_s {
-    amar_file_t *file;	/* file for this attribute	*/
-    gint attrid;	/* id of this attribute		*/
-    gboolean wrote_eoa;	/* If the attribute is finished	*/
+    amar_file_t *file;		/* file for this attribute	*/
+    off_t        size;		/* size of the attribute        */
+    gint         attrid;	/* id of this attribute		*/
+    gboolean     wrote_eoa;	/* If the attribute is finished	*/
+    GThread     *thread;
+    int          fd;
+    int          eoa;
+    GError     **error;
 };
 
 /*
  * Internal functions
  */
+
+static gboolean amar_attr_close_no_remove(amar_attr_t *attribute, GError **error);
+static void amar_read_cb(void *cookie);
 
 GQuark
 amar_error_quark(void)
@@ -154,15 +194,15 @@ write_header(
 static gboolean
 write_record(
 	amar_t *archive,
-	uint16_t filenum,
-	uint16_t attrid,
+	amar_file_t *file,
+	guint16  attrid,
 	gboolean eoa,
 	gpointer data,
 	gsize data_size,
 	GError **error)
 {
     /* the buffer always has room for a new record header */
-    MKRECORD(archive->buf + archive->buf_len, filenum, attrid, data_size, eoa);
+    MKRECORD(archive->buf + archive->buf_len, file->filenum, attrid, data_size, eoa);
     archive->buf_len += RECORD_SIZE;
 
     /* is it worth copying this record into the buffer? */
@@ -189,6 +229,7 @@ write_record(
     }
 
     archive->position += data_size + RECORD_SIZE;
+    file->size += data_size + RECORD_SIZE;
     return TRUE;
 }
 
@@ -258,6 +299,13 @@ amar_close(
     return success;
 }
 
+off_t
+amar_size(
+    amar_t *archive)
+{
+    return archive->position;
+}
+
 /*
  * Writing
  */
@@ -314,6 +362,7 @@ amar_new_file(
     file = g_new0(amar_file_t, 1);
     file->archive = archive;
     file->filenum = archive->maxfilenum;
+    file->size = 0;
     file->attributes = g_hash_table_new_full(g_int_hash, g_int_equal, NULL, g_free);
     g_hash_table_insert(archive->files, &file->filenum, file);
 
@@ -325,7 +374,7 @@ amar_new_file(
     }
 
     /* add a filename record */
-    if (!write_record(archive, file->filenum, AMAR_ATTR_FILENAME,
+    if (!write_record(archive, file, AMAR_ATTR_FILENAME,
 		      1, filename_buf, filename_len, error))
 	goto error_exit;
 
@@ -340,6 +389,13 @@ error_exit:
     return NULL;
 }
 
+off_t
+amar_file_size(
+    amar_file_t *file)
+{
+    return file->size;
+}
+
 static void
 foreach_attr_close(
 	gpointer key G_GNUC_UNUSED,
@@ -349,12 +405,17 @@ foreach_attr_close(
     amar_attr_t *attr = value;
     GError **error = user_data;
 
+    if (attr->thread) {
+	g_thread_join(attr->thread);
+	attr->thread = NULL;
+    }
+
     /* return immediately if we've already seen an error */
     if (*error)
 	return;
 
     if (!attr->wrote_eoa) {
-	amar_attr_close(attr, error);
+	amar_attr_close_no_remove(attr, error);
     }
 }
 
@@ -373,7 +434,7 @@ amar_file_close(
 
     /* write an EOF record */
     if (success) {
-	if (!write_record(archive, file->filenum, AMAR_ATTR_EOF, 1,
+	if (!write_record(archive, file, AMAR_ATTR_EOF, 1,
 			  NULL, 0, error))
 	    success = FALSE;
     }
@@ -391,7 +452,7 @@ amar_file_close(
 amar_attr_t *
 amar_new_attr(
     amar_file_t *file,
-    uint16_t attrid,
+    guint16  attrid,
     GError **error G_GNUC_UNUSED)
 {
     amar_attr_t *attribute;
@@ -403,8 +464,12 @@ amar_new_attr(
 
     attribute = malloc(SIZEOF(amar_attr_t));
     attribute->file = file;
+    attribute->size = 0;
     attribute->attrid = attrid;
     attribute->wrote_eoa = FALSE;
+    attribute->thread = NULL;
+    attribute->fd = -1;
+    attribute->eoa = 0;
     g_hash_table_replace(file->attributes, &attribute->attrid, attribute);
 
     /* (note this function cannot currently return an error) */
@@ -412,8 +477,15 @@ amar_new_attr(
     return attribute;
 }
 
-gboolean
-amar_attr_close(
+off_t
+amar_attr_size(
+    amar_attr_t *attr)
+{
+    return attr->size;
+}
+
+static gboolean
+amar_attr_close_no_remove(
     amar_attr_t *attribute,
     GError **error)
 {
@@ -421,14 +493,34 @@ amar_attr_close(
     amar_t        *archive = file->archive;
     gboolean rv = TRUE;
 
+    if (attribute->thread) {
+	g_thread_join(attribute->thread);
+	attribute->thread = NULL;
+    }
+
     /* write an empty record with EOA_BIT set if we haven't ended
      * this attribute already */
     if (!attribute->wrote_eoa) {
-	if (!write_record(archive, file->filenum, attribute->attrid,
+	if (!write_record(archive, file, attribute->attrid,
 			  1, NULL, 0, error))
 	    rv = FALSE;
 	attribute->wrote_eoa = TRUE;
     }
+
+    return rv;
+}
+
+gboolean
+amar_attr_close(
+    amar_attr_t *attribute,
+    GError **error)
+{
+    amar_file_t *file = attribute->file;
+    gboolean     rv   = TRUE;
+    gint  attrid_gint = attribute->attrid;
+
+    rv = amar_attr_close_no_remove(attribute, error);
+    g_hash_table_remove(file->attributes, &attrid_gint);
 
     return rv;
 }
@@ -458,12 +550,13 @@ amar_attr_add_data_buffer(
 		rec_eoa = TRUE;
 	}
 
-	if (!write_record(archive, file->filenum, attribute->attrid,
+	if (!write_record(archive, file, attribute->attrid,
 			  rec_eoa, data, rec_data_size, error))
 	    return FALSE;
 
-	data += rec_data_size;
+	data = (gchar *)data + rec_data_size;
 	size -= rec_data_size;
+	attribute->size += rec_data_size;
     }
 
     if (eoa) {
@@ -472,6 +565,36 @@ amar_attr_add_data_buffer(
 
     return TRUE;
 }
+
+static gpointer amar_attr_add_data_fd_thread(gpointer data);
+off_t
+amar_attr_add_data_fd_in_thread(
+    amar_attr_t *attribute,
+    int fd,
+    gboolean eoa,
+    GError **error)
+{
+    attribute->fd = fd;
+    attribute->eoa = eoa;
+    attribute->error = error;
+    attribute->thread = g_thread_create(amar_attr_add_data_fd_thread, attribute, TRUE, NULL);
+    return 0;
+}
+
+static gpointer
+amar_attr_add_data_fd_thread(
+    gpointer data)
+{
+    amar_attr_t *attribute = (amar_attr_t *)data;
+
+    amar_attr_add_data_fd(attribute, attribute->fd, attribute->eoa, attribute->error);
+    close(attribute->fd);
+    attribute->fd = -1;
+    attribute->eoa = 0;
+    attribute->error = NULL;
+    return NULL;
+}
+
 
 off_t
 amar_attr_add_data_fd(
@@ -490,11 +613,12 @@ amar_attr_add_data_fd(
 
     /* read and write until reaching EOF */
     while ((size = full_read(fd, buf, MAX_RECORD_DATA_SIZE)) >= 0) {
-	if (!write_record(archive, file->filenum, attribute->attrid,
+	if (!write_record(archive, file, attribute->attrid,
 			    eoa && (size < MAX_RECORD_DATA_SIZE), buf, size, error))
 	    goto error_exit;
 
 	filesize += size;
+	attribute->size += size;
 
 	if (size < MAX_RECORD_DATA_SIZE)
 	    break;
@@ -525,9 +649,10 @@ error_exit:
  * each file. */
 
 typedef struct attr_state_s {
-    uint16_t attrid;
+    guint16  attrid;
     amar_attr_handling_t *handling;
-    gpointer buf;
+    int      fd;
+    gchar *buf;
     gsize buf_len;
     gsize buf_size;
     gpointer attr_data;
@@ -535,31 +660,12 @@ typedef struct attr_state_s {
 } attr_state_t;
 
 typedef struct file_state_s {
-    uint16_t filenum;
+    guint16  filenum;
     gpointer file_data; /* user's data */
     gboolean ignore;
 
     GSList *attr_states;
 } file_state_t;
-
-typedef struct handling_params_s {
-    /* parameters from the user */
-    gpointer user_data;
-    amar_attr_handling_t *handling_array;
-    amar_file_start_callback_t file_start_cb;
-    amar_file_finish_callback_t file_finish_cb;
-
-    /* tracking for open files and attributes */
-    GSList *file_states;
-
-    /* read buffer */
-    gpointer buf;
-    gsize buf_size; /* allocated size */
-    gsize buf_len; /* number of active bytes .. */
-    gsize buf_offset; /* ..starting at buf + buf_offset */
-    gboolean got_eof;
-    gboolean just_lseeked; /* did we just call lseek? */
-} handling_params_t;
 
 /* buffer-handling macros and functions */
 
@@ -679,7 +785,7 @@ retry:
       : buf_skip_((archive), (hp), (skipbytes)))
 
 /* Get a pointer to the current position in the buffer */
-#define buf_ptr(hp) ((hp)->buf + (hp)->buf_offset)
+#define buf_ptr(hp) ((gchar *)(hp)->buf + (hp)->buf_offset)
 
 /* Get the amount of data currently available in the buffer */
 #define buf_avail(hp) ((hp)->buf_len)
@@ -698,7 +804,6 @@ finish_attr(
 			&as->attr_data, as->buf, as->buf_len, TRUE, truncated);
     }
     amfree(as->buf);
-    amfree(as);
 
     return success;
 }
@@ -717,14 +822,24 @@ finish_file(
 	attr_state_t *as = (attr_state_t *)iter->data;
 	success = success && finish_attr(hp, fs, as, TRUE);
     }
-    g_slist_free(fs->attr_states);
+    slist_free_full(fs->attr_states, g_free);
     fs->attr_states = NULL;
 
     if (hp->file_finish_cb && !fs->ignore)
-	success = success && hp->file_finish_cb(hp->user_data, fs->filenum, &fs->file_data, truncated);
+	success = success && hp->file_finish_cb(hp->user_data, fs->filenum,
+					        &fs->file_data, truncated);
 
-    amfree(fs);
     return success;
+}
+
+static gboolean
+read_done(
+    handling_params_t *hp)
+{
+    if (hp->done_cb) {
+	return hp->done_cb(hp->user_data, *hp->error);
+    }
+    return TRUE;
 }
 
 /* buffer the data and/or call the callback for this attribute */
@@ -773,6 +888,411 @@ handle_hunk(
     return success;
 }
 
+void amar_read_to(
+    amar_t   *archive,
+    guint16   filenum,
+    guint16   attrid,
+    int       fd)
+{
+    file_state_t *fs = NULL;
+    attr_state_t *as = NULL;
+    GSList *iter;
+
+    /* find the file_state_t, if it exists */
+    for (iter = archive->hp->file_states; iter; iter = iter->next) {
+	if (((file_state_t *)iter->data)->filenum == filenum) {
+	    fs = (file_state_t *)iter->data;
+	    break;
+	}
+    }
+
+    if (!fs) {
+	fs = g_new0(file_state_t, 1);
+	fs->filenum = filenum;
+	archive->hp->file_states = g_slist_prepend(archive->hp->file_states, fs);
+    }
+
+    /* find the attr_state_t, if it exists */
+    for (iter = fs->attr_states; iter; iter = iter->next) {
+	if (((attr_state_t *)(iter->data))->attrid == attrid) {
+	    as = (attr_state_t *)(iter->data);
+	    break;
+	}
+    }
+
+    if (!as) {
+	amar_attr_handling_t *hdl = archive->hp->handling_array;
+	for (hdl = archive->hp->handling_array; hdl->attrid != 0; hdl++) {
+	    if (hdl->attrid == attrid)
+		break;
+	}
+	as = g_new0(attr_state_t, 1);
+        as->attrid = attrid;
+        as->handling = hdl;
+        fs->attr_states = g_slist_prepend(fs->attr_states, as);
+    }
+
+    as->fd = fd;
+}
+
+void amar_stop_read(
+    amar_t   *archive)
+{
+    if (archive->hp->event_read_extract) {
+	event_release(archive->hp->event_read_extract);
+	archive->hp->event_read_extract = NULL;
+    }
+}
+
+void amar_start_read(
+    amar_t   *archive)
+{
+    if (!archive->hp->event_read_extract) {
+	archive->hp->event_read_extract = event_register(archive->fd, EV_READFD,
+						         amar_read_cb, archive);
+    }
+}
+
+static void
+amar_read_cb(
+    void *cookie)
+{
+    amar_t *archive = cookie;
+    ssize_t count;
+    size_t  need_bytes = 0;
+    guint16  filenum;
+    guint16  attrid;
+    guint32  datasize;
+    gboolean eoa;
+    file_state_t *fs = NULL;
+    attr_state_t *as = NULL;
+    GSList *iter;
+    amar_attr_handling_t *hdl;
+    gboolean success = TRUE;
+    handling_params_t *hp = archive->hp;
+
+    hp = archive->hp;
+
+    count = read(archive->fd, hp->buf + hp->buf_offset + hp->buf_len,
+			      hp->buf_size - hp->buf_len - hp->buf_offset);
+    if (count == -1) {
+	int save_errno = errno;
+	g_debug("failed to read archive: %s", strerror(save_errno));
+	g_set_error(hp->error, amar_error_quark(), save_errno,
+			"failed to read archive: %s", strerror(save_errno));
+    }
+    hp->buf_len += count;
+
+    /* process all complete records */
+    while (hp->buf_len >= RECORD_SIZE && hp->event_read_extract) {
+	as = NULL;
+	fs = NULL;
+	GETRECORD(buf_ptr(hp), filenum, attrid, datasize, eoa);
+	if (filenum == MAGIC_FILENUM) {
+	    int vers;
+
+	    /* HEADER_RECORD */
+	    if (hp->buf_len < HEADER_SIZE) {
+		/* not a complete header */
+		need_bytes = HEADER_SIZE;
+		break;
+	    }
+
+	    if (sscanf(buf_ptr(hp), HEADER_MAGIC " %d", &vers) != 1) {
+		g_set_error(hp->error, amar_error_quark(), EINVAL,
+			    "Invalid archive header");
+		read_done(archive->hp);
+		return;
+	    }
+
+	    if (vers > HEADER_VERSION) {
+		g_set_error(hp->error, amar_error_quark(), EINVAL,
+			    "Archive version %d is not supported", vers);
+		read_done(archive->hp);
+		return;
+	    }
+
+	    /* skip the header block */
+	    hp->buf_offset += HEADER_SIZE;
+	    hp->buf_len    -= HEADER_SIZE;
+	    continue; /* go to next record */
+
+	} else if (datasize > MAX_RECORD_DATA_SIZE) {
+	    g_set_error(hp->error, amar_error_quark(), EINVAL,
+			"Invalid record: data size must be less than %d",
+			MAX_RECORD_DATA_SIZE);
+	    read_done(archive->hp);
+	    return;
+
+	} else if (hp->buf_len < RECORD_SIZE + datasize) {
+	    /* not a complete record */
+	    need_bytes = RECORD_SIZE + datasize;
+	    break;
+	}
+
+	/* find the file_state_t, if it exists */
+	for (iter = hp->file_states; iter; iter = iter->next) {
+	    if (((file_state_t *)iter->data)->filenum == filenum) {
+		fs = (file_state_t *)iter->data;
+		break;
+	    }
+	}
+
+	/* get the "special" attributes out of the way */
+        if (G_UNLIKELY(attrid < AMAR_ATTR_APP_START)) {
+	    if (attrid == AMAR_ATTR_EOF) {
+		if (datasize != 0) {
+		    g_set_error(hp->error, amar_error_quark(), EINVAL,
+				"Archive contains an EOF record with nonzero size");
+		    read_done(archive->hp);
+		    return;
+		}
+		hp->buf_offset += RECORD_SIZE;
+		hp->buf_len    -= RECORD_SIZE;
+		if (fs) {
+		    hp->file_states = g_slist_remove(hp->file_states, fs);
+		    success = finish_file(hp, fs, FALSE);
+		    g_free(fs);
+		    fs = NULL;
+		    if (!success)
+			break;
+		}
+		continue;
+	    } else if (attrid == AMAR_ATTR_FILENAME) {
+		if (fs) {
+		    /* TODO: warn - previous file did not end correctly */
+		    hp->file_states = g_slist_remove(hp->file_states, fs);
+		    success = finish_file(hp, fs, TRUE);
+		    g_free(fs);
+		    fs = NULL;
+		    if (!success)
+			break;
+		}
+
+		if (datasize == 0) {
+		    unsigned int i, nul_padding = 1;
+		    char *bb;
+		    /* try to detect NULL padding bytes */
+		    if (hp->buf_len < 512 - RECORD_SIZE) {
+			/* close to end of file */
+			break;
+		    }
+		    hp->buf_offset += RECORD_SIZE;
+		    hp->buf_len    -= RECORD_SIZE;
+		    bb = buf_ptr(hp);
+		    /* check all byte == 0 */
+		    for (i=0; i<512 - RECORD_SIZE; i++) {
+			if (*bb++ != 0)
+			    nul_padding = 0;
+		    }
+		    hp->buf_offset += datasize;
+		    hp->buf_len    -= datasize;
+		    if (nul_padding) {
+			break;
+		    }
+		    g_set_error(hp->error, amar_error_quark(), EINVAL,
+				"Archive file %d has an empty filename",
+				(int)filenum);
+		    read_done(archive->hp);
+		    return;
+		}
+
+		if (!eoa) {
+		    g_set_error(hp->error, amar_error_quark(), EINVAL,
+				"Filename record for fileid %d does "
+				"not have its EOA bit set", (int)filenum);
+		    hp->buf_offset += (RECORD_SIZE + datasize);
+		    hp->buf_len    -= (RECORD_SIZE + datasize);
+		    read_done(archive->hp);
+		    return;
+		}
+
+		fs = g_new0(file_state_t, 1);
+		fs->filenum = filenum;
+		hp->file_states = g_slist_prepend(hp->file_states, fs);
+
+		if (hp->file_start_cb) {
+		    hp->buf_offset += RECORD_SIZE;
+		    hp->buf_len    -= RECORD_SIZE;
+		    success = hp->file_start_cb(hp->user_data, filenum,
+				buf_ptr(hp), datasize,
+				&fs->ignore, &fs->file_data);
+		    hp->buf_offset += datasize;
+		    hp->buf_len    -= datasize;
+		    if (!success)
+			break;
+		}
+		continue;
+
+	    } else {
+		g_set_error(hp->error, amar_error_quark(), EINVAL,
+			    "Unknown attribute id %d in archive file %d",
+			    (int)attrid, (int)filenum);
+		read_done(archive->hp);
+		return;
+	    }
+	}
+
+	/* if this is an unrecognized file or a known file that's being
+	 * ignored, then skip it. */
+	if (!fs || fs->ignore) {
+	    hp->buf_offset += (RECORD_SIZE + datasize);
+	    hp->buf_len    -= (RECORD_SIZE + datasize);
+	    continue;
+	}
+
+	/* ok, this is an application attribute.  Look up its as, if it exists. */
+	for (iter = fs->attr_states; iter; iter = iter->next) {
+	    if (((attr_state_t *)(iter->data))->attrid == attrid) {
+		as = (attr_state_t *)(iter->data);
+		break;
+	    }
+	}
+
+	/* and get the proper handling for that attribute */
+	if (as) {
+	    hdl = as->handling;
+	} else {
+	    hdl = hp->handling_array;
+	    for (hdl = hp->handling_array; hdl->attrid != 0; hdl++) {
+		if (hdl->attrid == attrid)
+		    break;
+	    }
+	}
+
+	/* As a shortcut, if this is a one-record attribute, handle it without
+	 * creating a new attribute_state_t. */
+	if (eoa && !as) {
+	    gpointer tmp = NULL;
+	    if (hdl->callback) {
+		hp->buf_offset += RECORD_SIZE;
+		hp->buf_len    -= RECORD_SIZE;
+		success = hdl->callback(hp->user_data, filenum, fs->file_data, attrid,
+					hdl->attrid_data, &tmp, buf_ptr(hp), datasize, eoa, FALSE);
+		hp->buf_offset += datasize;
+		hp->buf_len    -= datasize;
+		if (!success)
+		    break;
+		continue;
+	    } else {
+		/* no callback -> just skip it */
+		hp->buf_offset += (RECORD_SIZE + datasize);
+		hp->buf_len    -= (RECORD_SIZE + datasize);
+		continue;
+	    }
+
+	}
+
+	/* ok, set up a new attribute state */
+	if (!as) {
+	    as = g_new0(attr_state_t, 1);
+	    as->fd = -1;
+	    as->attrid = attrid;
+	    as->handling = hdl;
+	    fs->attr_states = g_slist_prepend(fs->attr_states, as);
+	}
+
+	hp->buf_offset += RECORD_SIZE;
+	hp->buf_len    -= RECORD_SIZE;
+	if (as->fd != -1) {
+	    int count = full_write(as->fd, buf_ptr(hp), datasize);
+	    hp->buf_offset += datasize;
+	    hp->buf_len    -= datasize;
+	    if (count != (gint32)datasize)
+		break;
+	    if (eoa) {
+		as->wrote_eoa = eoa;
+	    }
+	} else if (hdl->callback) {
+	    success = handle_hunk(hp, fs, as, hdl, buf_ptr(hp), datasize, eoa);
+	    hp->buf_offset += datasize;
+	    hp->buf_len    -= datasize;
+	    if (!success)
+		break;
+	} else {
+	    hp->buf_offset += datasize;
+	    hp->buf_len    -= datasize;
+	}
+
+	/* finish the attribute if this is its last record */
+	if (eoa) {
+	    success = finish_attr(hp, fs, as, FALSE);
+	    fs->attr_states = g_slist_remove(fs->attr_states, as);
+	    g_free(as);
+	    as = NULL;
+	    if (!success)
+		break;
+        }
+    }
+
+    /* increase buffer if needed */
+    if (need_bytes > hp->buf_size) {
+	char *new_buf = g_malloc(need_bytes);
+	memcpy(new_buf, hp->buf + hp->buf_offset, hp->buf_len);
+	g_free(hp->buf);
+	hp->buf = new_buf;
+	hp->buf_offset = 0;
+	hp->buf_size = need_bytes;
+    } else if (hp->buf_offset > 0) {
+	/* move data at begining of buffer */
+	memmove(hp->buf, hp->buf + hp->buf_offset, hp->buf_len);
+	hp->buf_offset = 0;
+    }
+
+    if (count == -1 || count == 0) {
+	if (count == 0 && hp->buf_len != 0) {
+	    g_set_error(hp->error, amar_error_quark(), EINVAL,
+			    "Archive ended with a partial record");
+	}
+	hp->got_eof = TRUE;
+	amar_stop_read(archive);
+
+	/* close any open files, assuming that they have been truncated */
+	for (iter = hp->file_states; iter; iter = iter->next) {
+	    file_state_t *fs = (file_state_t *)iter->data;
+	    finish_file(hp, fs, TRUE);
+	}
+	slist_free_full(hp->file_states, g_free);
+	read_done(hp);
+	g_free(hp->buf);
+	g_free(hp);
+	archive->hp = NULL;
+    }
+}
+
+event_fn_t
+set_amar_read_cb(
+	amar_t *archive,
+	gpointer user_data,
+	amar_attr_handling_t *handling_array,
+	amar_file_start_callback_t file_start_cb,
+	amar_file_finish_callback_t file_finish_cb,
+	amar_done_callback_t done_cb,
+	GError **error)
+{
+    handling_params_t *hp = g_new0(handling_params_t, 1);
+
+    g_assert(archive->mode == O_RDONLY);
+
+    hp->user_data = user_data;
+    hp->handling_array = handling_array;
+    hp->file_start_cb = file_start_cb;
+    hp->file_finish_cb = file_finish_cb;
+    hp->done_cb = done_cb;
+    hp->error = error;
+    hp->file_states = NULL;
+    hp->buf_len = 0;
+    hp->buf_offset = 0;
+    hp->buf_size = 65536; /* use a 64K buffer to start */
+    hp->buf = g_malloc(hp->buf_size);
+    hp->got_eof = FALSE;
+    hp->just_lseeked = FALSE;
+    archive->hp = hp;
+
+    amar_start_read(archive);
+    return amar_read_cb;
+}
+
 gboolean
 amar_read(
 	amar_t *archive,
@@ -780,15 +1300,16 @@ amar_read(
 	amar_attr_handling_t *handling_array,
 	amar_file_start_callback_t file_start_cb,
 	amar_file_finish_callback_t file_finish_cb,
+	amar_done_callback_t done_cb,
 	GError **error)
 {
     file_state_t *fs = NULL;
     attr_state_t *as = NULL;
     GSList *iter;
     handling_params_t hp;
-    uint16_t filenum;
-    uint16_t attrid;
-    uint32_t datasize;
+    guint16  filenum;
+    guint16  attrid;
+    guint32  datasize;
     gboolean eoa;
     amar_attr_handling_t *hdl;
     gboolean success = TRUE;
@@ -799,6 +1320,7 @@ amar_read(
     hp.handling_array = handling_array;
     hp.file_start_cb = file_start_cb;
     hp.file_finish_cb = file_finish_cb;
+    hp.done_cb = done_cb;
     hp.file_states = NULL;
     hp.buf_len = 0;
     hp.buf_offset = 0;
@@ -881,6 +1403,7 @@ amar_read(
 		    success = finish_file(&hp, fs, FALSE);
 		    hp.file_states = g_slist_remove(hp.file_states, fs);
 		    as = NULL;
+		    g_free(fs);
 		    fs = NULL;
 		    if (!success)
 			break;
@@ -896,6 +1419,7 @@ amar_read(
 		    success = finish_file(&hp, fs, TRUE);
 		    hp.file_states = g_slist_remove(hp.file_states, fs);
 		    as = NULL;
+		    g_free(fs);
 		    fs = NULL;
 		    if (!success)
 			break;
@@ -1066,9 +1590,10 @@ amar_read(
 	if (eoa) {
 	    success = finish_attr(&hp, fs, as, FALSE);
 	    fs->attr_states = g_slist_remove(fs->attr_states, as);
+	    g_free(as);
+	    as = NULL;
 	    if (!success)
 		break;
-	    as = NULL;
 	}
     }
 
@@ -1078,8 +1603,18 @@ amar_read(
 	file_state_t *fs = (file_state_t *)iter->data;
 	finish_file(&hp, fs, TRUE);
     }
-    g_slist_free(hp.file_states);
+    slist_free_full(hp.file_states, g_free);
     g_free(hp.buf);
 
     return success;
+}
+
+void amar_set_error(
+    amar_t *archive,
+    char *msg)
+{
+    g_set_error(archive->hp->error, amar_error_quark(), EINVAL, "%s",
+		g_strdup(msg));
+    amar_stop_read(archive);
+    read_done(archive->hp);
 }

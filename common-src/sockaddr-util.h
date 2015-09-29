@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -43,6 +44,12 @@ void	dump_sockaddr(sockaddr_union *	sa);
  */
 char *  str_sockaddr(sockaddr_union *sa);
 char *  str_sockaddr_no_port(sockaddr_union *sa);
+
+/* same but threadsafe, the string is put in strsockaddr
+ */
+char *  str_sockaddr_r(sockaddr_union *sa, char *strsockaddr, socklen_t size);
+char *  str_sockaddr_no_port_r(sockaddr_union *sa, char *strsockaddr,
+			       socklen_t size);
 
 /* Compare two sockaddr_union objects, optionally comparing
  * only the address (and thus ignoring port, flow info, etc.).

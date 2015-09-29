@@ -1,8 +1,9 @@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -315,6 +316,10 @@ restrict to parts with exactly this level
 
 restrict to parts with this status
 
+=item labelstr
+
+restrict to parts on volume matching the labelstr.
+
 =item dumpspecs
 
 (arrayref of dumpspecs) restruct to parts matching one or more of these dumpspecs
@@ -404,7 +409,7 @@ TODO: add_dump
 use Amanda::Logfile qw( :constants );
 use Amanda::Tapelist;
 use Amanda::Config qw( :init :getconf config_dir_relative );
-use Amanda::Util qw( quote_string weaken_ref match_disk match_host match_datestamp match_level);
+use Amanda::Util qw( quote_string weaken_ref match_disk match_host match_datestamp match_level match_labelstr_expr);
 use File::Glob qw( :glob );
 use warnings;
 use strict;
@@ -469,7 +474,7 @@ sub get_run_type {
     my ($write_timestamp) = @_;
 
     # find all of the logfiles with that name
-    my $logdir = getconf($CNF_LOGDIR);
+    my $logdir = config_dir_relative(getconf($CNF_LOGDIR));
     my @matches = File::Glob::bsd_glob("$logdir/log.$write_timestamp.*", GLOB_NOSORT);
     if ($write_timestamp =~ /000000$/) {
 	my $write_datestamp = substr($write_timestamp, 0, 8);
@@ -521,6 +526,13 @@ sub get_parts_and_dumps {
 
     # specifying write_timestamps implies we won't check holding files
     if ($params{'write_timestamps'}) {
+	if (defined $params{'holding'} and $params{'holding'}) {
+	    return [], []; # well, that's easy..
+	}
+	$params{'holding'} = 0;
+    }
+    # specifying labelstr implies we won't check holding files
+    if ($params{'labelstr'}) {
 	if (defined $params{'holding'} and $params{'holding'}) {
 	    return [], []; # well, that's easy..
 	}
@@ -619,6 +631,8 @@ sub get_parts_and_dumps {
 		and !exists($levels_hash{$find_result->{'level'}}));
 	    next if (%labels_hash 
 		and !exists($labels_hash{$find_result->{'label'}}));
+	    next if (defined $params{'labelstr'}
+		and !match_labelstr_expr($params{'labelstr'},$find_result->{'label'}));
 	    if ($get_what eq 'parts') {
 		next if (exists($params{'status'}) 
 		    and defined $find_result->{'status'}
@@ -902,7 +916,7 @@ sub sort_dumps {
 	for my $key (@$keys) {
 	    my ($rev, $k) = ($key =~ /^(-?)(.*)$/);
 
-	    if ($k =~ /^(nparts|level)$/) {
+	    if ($k =~ /^(nparts|level|filenum)$/) {
 		# compare dump components numerically
 		$res = $a->{$k} <=> $b->{$k};
 	    } else { # ($k =~ /^(hostname|diskname|write_timestamp|dump_timestamp)$/)
@@ -928,7 +942,7 @@ sub add_part {
     my $logfh;
     my $logfile;
     my $find_result;
-    my $logdir = getconf($CNF_LOGDIR);
+    my $logdir = config_dir_relative(getconf($CNF_LOGDIR));
     my ($last_filenum, $last_secs, $last_kbs);
 
     # first order of business is to find out whether we need to make a new

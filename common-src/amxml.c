@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -60,7 +61,7 @@ typedef struct amgxml_s {
     property_t *property_data;
     proplist_t  property;
     script_t   *script;
-    level_t    *alevel;
+    am_level_t    *alevel;
     char       *encoding;
     char       *raw;
 } amgxml_t;
@@ -99,6 +100,8 @@ free_dle(
     free_sl(dle->exclude_list);
     free_sl(dle->include_file);
     free_sl(dle->include_list);
+    if (dle->property)
+	g_hash_table_destroy(dle->property);
     if (dle->application_property)
 	g_hash_table_destroy(dle->application_property);
     for(scriptlist = dle->scriptlist; scriptlist != NULL;
@@ -149,6 +152,7 @@ init_dle(
     dle->include_list = NULL;
     dle->exclude_optional = 0;
     dle->include_optional = 0;
+    dle->property = NULL;
     dle->application_property = NULL;
     dle->scriptlist = NULL;
     dle->data_path = DATA_PATH_AMANDA;
@@ -250,9 +254,11 @@ amstart_element(
 	data_user->has_optional = 0;
 	data_user->property_name = NULL;
 	data_user->property_data = NULL;
-	data_user->property = NULL;
+	data_user->property =
+	            g_hash_table_new_full(g_str_hash, g_str_equal, &g_free, &free_property_t);
 	data_user->script = NULL;
 	data_user->alevel = NULL;
+	data_user->dle->property = data_user->property;
 	data_user->encoding = NULL;
 	data_user->raw = NULL;
     } else if(strcmp(element_name, "disk"          ) == 0 ||
@@ -311,7 +317,7 @@ amstart_element(
 	if (strcmp(element_name, "exclude") == 0 || strcmp(element_name, "include") == 0)
 	   data_user->has_optional = 0;
 	if (strcmp(element_name, "level") == 0) {
-	    data_user->alevel = g_new0(level_t, 1);
+	    data_user->alevel = g_new0(am_level_t, 1);
 	}
     } else if (strcmp(element_name, "server") == 0) {
 	if (strcmp(last_element_name, "level") != 0) {
@@ -363,8 +369,10 @@ amstart_element(
 	    return;
 	}
     } else if(strcmp(element_name, "property") == 0) {
-	if (strcmp(last_element_name, "backup-program") != 0 &&
-	    strcmp(last_element_name, "script") != 0) {
+	if (!last_element ||
+	    (strcmp(last_element_name, "backup-program") != 0 &&
+	     strcmp(last_element_name, "script") != 0 &&
+	     strcmp(last_element_name, "dle") != 0)) {
 	    g_set_error(gerror, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
 			"XML: Invalid %s element", element_name);
 	    return;
@@ -495,6 +503,7 @@ amend_element(
 	if (dle->estimatelist == NULL)
 	    dle->estimatelist = g_slist_append(dle->estimatelist, ES_CLIENT);
 /* Add check of required field */
+	data_user->property = NULL;
 	data_user->dle = NULL;
     } else if (strcmp(element_name, "backup-program") == 0) {
 	if (dle->program == NULL) {
@@ -503,7 +512,7 @@ amend_element(
 	    return;
 	}
 	dle->application_property = data_user->property;
-	data_user->property = NULL;
+	data_user->property = dle->property;
     } else if (strcmp(element_name, "script") == 0) {
 	if (data_user->script->plugin == NULL) {
 	    g_set_error(gerror, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
@@ -511,7 +520,7 @@ amend_element(
 	    return;
 	}
 	data_user->script->property = data_user->property;
-	data_user->property = NULL;
+	data_user->property = dle->property;
 	dle->scriptlist = g_slist_append(dle->scriptlist, data_user->script);
 	data_user->script = NULL;
     } else if (strcmp(element_name, "level") == 0) {
@@ -548,7 +557,7 @@ amtext(
     }
     last_element_name = last_element->data;
 
-    tt = malloc(text_len + 1);
+    tt = malloc(text_len + 8 + 1);
     strncpy(tt,text,text_len);
     tt[text_len] = '\0';
 

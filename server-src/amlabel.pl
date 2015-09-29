@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -57,6 +58,8 @@ $opt_force = 0;
 $opt_barcode = undef;
 $opt_meta = undef;
 $opt_assign = undef;
+
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw(bundling));
 GetOptions(
     'version' => \&Amanda::Util::version_opt,
@@ -69,7 +72,7 @@ GetOptions(
     'version'    => \&Amanda::Util::version_opt,
 ) or usage();
 
-if ($opt_assign && (!$opt_meta || !$opt_barcode)) {
+if ($opt_assign && (!$opt_meta and !$opt_barcode)) {
     print STDERR "--assign require --barcode or --meta\n";
     usage();
 }
@@ -298,7 +301,7 @@ sub main {
 	    # update the tapelist
 	    $tl->reload(1);
 	    $tl->remove_tapelabel($label);
-	    $tl->add_tapelabel("0", $label, undef, 1, $meta, $res->{'barcode'}, $dev->header_block_size/1024);
+	    $tl->add_tapelabel("0", $label, undef, 1, $meta, $res->{'barcode'}, $dev->block_size/1024);
 	    $tl->write();
 
 	    print "Success!\n";

@@ -1,8 +1,9 @@
-# Copyright (c) 2009,2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -20,6 +21,7 @@ package Amanda::Changer::aggregate;
 
 use strict;
 use warnings;
+use Carp;
 use vars qw( @ISA );
 @ISA = qw( Amanda::Changer );
 
@@ -91,6 +93,7 @@ sub new {
 
     my $state_filename;
     my $state_filename_prop = $config->{'properties'}->{'state_filename'};
+    my $lock_timeout = $config->{'properties'}->{'lock-timeout'};
 
     if (defined $state_filename_prop) {
 	$state_filename = $state_filename_prop->{'values'}[0];
@@ -106,6 +109,7 @@ sub new {
 	num_children => scalar @children,
 	current_slot => undef,
 	state_filename => $state_filename,
+	'lock-timeout' => $lock_timeout,
     };
     bless ($self, $class);
     return $self;
@@ -655,7 +659,7 @@ sub _for_each_child {
 	($params{'oksub'}, $params{'errsub'}, $params{'parent_cb'}, $params{'args'});
 
     if (defined($args)) {
-	die "number of args did not match number of children"
+	confess "number of args did not match number of children"
 	    unless (@$args == $self->{'num_children'});
     } else {
 	$args = [ ( undef ) x $self->{'num_children'} ];

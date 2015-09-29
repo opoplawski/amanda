@@ -1,8 +1,9 @@
-# Copyright (c) 2008, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -145,7 +146,8 @@ sub sortparts {
     map {
 	# convert bigints to strings and on to integers so is_deeply doesn't get confused
 	$_->{'dump'}->{'level'} = "$_->{dump}->{level}" + 0;
-	$_->{'dump'}->{'bytes'} = "$_->{dump}->{bytes}" + 0;
+	$_->{'dump'}->{'bytes'} = 0;
+	$_->{'dump'}->{'bytes'} = "$_->{dump}->{bytes}" + 0 if defined $_->{dump}->{bytes};
 	$_->{'dump'}->{'kb'} = "$_->{dump}->{kb}" + 0;
 	$_->{'dump'}->{'orig_kb'} = "$_->{dump}->{orig_kb}" + 0;
 	if (!defined $_->{filenum}) {
@@ -239,9 +241,11 @@ sub sortdumps {
     map {
 	# convert bigints to strings and on to integers so is_deeply doesn't get confused
 	$_->{'level'} = "$_->{level}" + 0;
-	$_->{'bytes'} = "$_->{bytes}" + 0;
+	$_->{'bytes'} = 0;
+	$_->{'bytes'} = "$_->{bytes}" + 0 if defined $_->{bytes};
 	$_->{'kb'} = "$_->{kb}" + 0;
-	$_->{'orig_kb'} = "$_->{orig_kb}" + 0;
+	$_->{'orig_kb'} = 0;
+	$_->{'orig_kb'} = "$_->{orig_kb}" + 0 if defined $_->{orig_kb};
 	$_->{'nparts'} = "$_->{nparts}" + 0;
 	$_;
     } sort {

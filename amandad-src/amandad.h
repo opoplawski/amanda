@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -33,7 +34,7 @@
 
 #include "amanda.h"
 #include "amfeatures.h"
-#include "sl.h"
+#include "am_sl.h"
 #include "util.h"		/* for bstrncmp() */
 
 typedef struct g_option_s {

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -1022,6 +1023,9 @@ backup_support_option(
 	} else if (strncmp(line,"AMFEATURES ", 11) == 0) {
 	    if (strcmp(line+11, "YES") == 0)
 		bsu->features = 1;
+	} else if (g_str_has_prefix(line, "RECOVER-DUMP-STATE-FILE ")) {
+	    if (g_str_equal(line + 19, "YES"))
+		bsu->features = 1;
 	} else {
 	    dbprintf(_("Invalid support line: %s\n"), line);
 	}
@@ -1166,7 +1170,7 @@ run_client_script(
 	levellist_t levellist;
 	char number[NUM_STR_SIZE];
 	for (levellist=dle->levellist; levellist; levellist=levellist->next) {
-	    level_t *alevel = (level_t *)levellist->data;
+	    am_level_t *alevel = (am_level_t *)levellist->data;
 	    g_ptr_array_add(argv_ptr, stralloc("--level"));
 	    g_snprintf(number, SIZEOF(number), "%d", alevel->level);
 	    g_ptr_array_add(argv_ptr, stralloc(number));
@@ -1258,6 +1262,7 @@ run_client_script(
 }
 
 void run_client_script_output(gpointer data, gpointer user_data);
+void run_client_script_output_backup(gpointer data, gpointer user_data);
 void run_client_script_err_amcheck(gpointer data, gpointer user_data);
 void run_client_script_err_estimate(gpointer data, gpointer user_data);
 void run_client_script_err_backup(gpointer data, gpointer user_data);
@@ -1278,6 +1283,19 @@ run_client_script_output(
 
     if (line && so->stream) {
 	g_fprintf(so->stream, "%s\n", line);
+    }
+}
+
+void
+run_client_script_output_backup(
+    gpointer data,
+    gpointer user_data)
+{
+    char            *line = data;
+    script_output_t *so   = user_data;
+
+    if (line && so->stream) {
+	g_fprintf(so->stream, "| %s\n", line);
     }
 }
 
@@ -1345,31 +1363,27 @@ run_client_scripts(
     GSList          *scriptlist;
     script_t        *script;
     GFunc            client_script_err = NULL;
+    GFunc            client_script_out = NULL;
     script_output_t  so = { streamout, dle };
 
     for (scriptlist = dle->scriptlist; scriptlist != NULL;
 	 scriptlist = scriptlist->next) {
 	script = (script_t *)scriptlist->data;
 	run_client_script(script, execute_on, g_options, dle);
-	if (script->result && script->result->output) {
-	    g_ptr_array_foreach(script->result->output,
-				run_client_script_output,
-				&so);
-	    g_ptr_array_free(script->result->output, TRUE);
-	    script->result->output = NULL;
-	}
-	if (script->result && script->result->err) {
+	if (script->result) {
 	    switch (execute_on) {
 	    case EXECUTE_ON_PRE_DLE_AMCHECK:
 	    case EXECUTE_ON_PRE_HOST_AMCHECK:
 	    case EXECUTE_ON_POST_DLE_AMCHECK:
 	    case EXECUTE_ON_POST_HOST_AMCHECK:
+		 client_script_out = run_client_script_output;
 		 client_script_err = run_client_script_err_amcheck;
 		 break;
 	    case EXECUTE_ON_PRE_DLE_ESTIMATE:
 	    case EXECUTE_ON_PRE_HOST_ESTIMATE:
 	    case EXECUTE_ON_POST_DLE_ESTIMATE:
 	    case EXECUTE_ON_POST_HOST_ESTIMATE:
+		 client_script_out = run_client_script_output;
 		 if (am_has_feature(g_options->features,
 				    fe_sendsize_rep_warning)) {
 		     client_script_err = run_client_script_err_estimate;
@@ -1379,6 +1393,7 @@ run_client_scripts(
 	    case EXECUTE_ON_PRE_HOST_BACKUP:
 	    case EXECUTE_ON_POST_DLE_BACKUP:
 	    case EXECUTE_ON_POST_HOST_BACKUP:
+		 client_script_out = run_client_script_output_backup;
 		 client_script_err = run_client_script_err_backup;
 		 break;
 	    case EXECUTE_ON_PRE_RECOVER:
@@ -1386,15 +1401,27 @@ run_client_scripts(
 	    case EXECUTE_ON_PRE_LEVEL_RECOVER:
 	    case EXECUTE_ON_POST_LEVEL_RECOVER:
 	    case EXECUTE_ON_INTER_LEVEL_RECOVER:
+		 client_script_out = run_client_script_output;
 		 client_script_err = run_client_script_err_recover;
 	    }
-	    if (client_script_err != NULL) {
-		g_ptr_array_foreach(script->result->err,
-				    client_script_err,
-				    &so);
+	    if (script->result->output) {
+		if (client_script_out) {
+		    g_ptr_array_foreach(script->result->output,
+					client_script_out,
+					&so);
+		}
+		g_ptr_array_free(script->result->output, TRUE);
+		script->result->output = NULL;
 	    }
-	    g_ptr_array_free(script->result->err, TRUE);
-	    script->result->err = NULL;
+	    if (script->result->err) {
+		if (client_script_err != NULL) {
+		    g_ptr_array_foreach(script->result->err,
+					client_script_err,
+					&so);
+		}
+		g_ptr_array_free(script->result->err, TRUE);
+		script->result->err = NULL;
+	    }
 	}
     }
 }
@@ -1584,6 +1611,7 @@ check_access(
 {
     char *noun, *adjective;
     char *quoted = quote_string(filename);
+    gboolean result;
 
     if(mode == F_OK)
         noun = "find", adjective = "exists";
@@ -1594,15 +1622,17 @@ check_access(
     else 
 	noun = "access", adjective = "accessible";
 
-    if(access(filename, mode) == -1) {
-	g_printf(_("ERROR [can not %s %s: %s]\n"), noun, quoted, strerror(errno));
-	amfree(quoted);
-	return FALSE;
+    if(EUIDACCESS(filename, mode) == -1) {
+	g_printf(_("ERROR [can not %s %s: %s (ruid:%d euid:%d)\n"), noun, quoted, strerror(errno),
+	    (int)getuid(), (int)geteuid());
+	result = FALSE;
     } else {
-	g_printf(_("OK %s %s\n"), quoted, adjective);
+	g_printf(_("OK %s %s (ruid:%d euid:%d)\n"), quoted, adjective,
+	    (int)getuid(), (int)geteuid());
+	result = TRUE;
     }
     amfree(quoted);
-    return TRUE;
+    return result;
 }
 
 gboolean
@@ -1628,14 +1658,8 @@ check_file(
 	amfree(quoted);
 	return FALSE;
     }
-    if (getuid() == geteuid()) {
-	return check_access(filename, mode);
-    } else {
-	quoted = quote_string(filename);
-	g_printf("OK %s\n", quoted);
-	amfree(quoted);
-    }
-    return TRUE;
+
+    return check_access(filename, mode);
 }
 
 gboolean
@@ -1646,6 +1670,7 @@ check_dir(
     struct stat stat_buf;
     char *quoted;
     char *dir;
+    gboolean result;
 
     if(!stat(dirname, &stat_buf)) {
 	if(!S_ISDIR(stat_buf.st_mode)) {
@@ -1662,18 +1687,11 @@ check_dir(
 	amfree(quoted);
 	return FALSE;
     }
-    if (getuid() == geteuid()) {
-	gboolean  result;
-	dir = stralloc2(dirname, "/.");
-	result = check_access(dir, mode);
-	amfree(dir);
-	return result;
-    } else {
-	quoted = quote_string(dirname);
-	g_printf("OK %s\n", quoted);
-	amfree(quoted);
-    }
-    return TRUE;
+
+    dir = g_strconcat(dirname, "/.", NULL);
+    result = check_access(dir, mode);
+    amfree(dir);
+    return result;
 }
 
 gboolean

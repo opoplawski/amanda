@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -50,7 +51,6 @@ struct _NullDevice {
 typedef struct _NullDeviceClass NullDeviceClass;
 struct _NullDeviceClass {
     DeviceClass __parent__;
-    gboolean in_file;
 };
 
 void null_device_register(void);
@@ -211,7 +211,7 @@ null_device_read_label(Device * dself) {
 
     device_set_error(dself,
 	stralloc(_("Can't open NULL device for reading or appending.")),
-	DEVICE_STATUS_DEVICE_ERROR);
+	DEVICE_STATUS_VOLUME_UNLABELED | DEVICE_STATUS_VOLUME_ERROR);
     return FALSE;
 }
 
@@ -237,7 +237,9 @@ null_device_start (Device * pself, DeviceAccessMode mode,
     if (device_in_error(self)) return FALSE;
 
     pself->access_mode = mode;
+    g_mutex_lock(pself->device_mutex);
     pself->in_file = FALSE;
+    g_mutex_unlock(pself->device_mutex);
 
     if (mode == ACCESS_WRITE) {
         pself->volume_label = newstralloc(pself->volume_label, label);
@@ -247,7 +249,7 @@ null_device_start (Device * pself, DeviceAccessMode mode,
     } else {
 	device_set_error(pself,
 	    stralloc(_("Can't open NULL device for reading or appending.")),
-	    DEVICE_STATUS_DEVICE_ERROR);
+	    DEVICE_STATUS_VOLUME_UNLABELED | DEVICE_STATUS_VOLUME_ERROR);
         return FALSE;
     }
 }
@@ -266,7 +268,9 @@ static gboolean
 null_device_start_file(Device * d_self,
 		    dumpfile_t * jobInfo G_GNUC_UNUSED)
 {
+    g_mutex_lock(d_self->device_mutex);
     d_self->in_file = TRUE;
+    g_mutex_unlock(d_self->device_mutex);
     d_self->is_eom = FALSE;
     d_self->block = 0;
     if (d_self->file <= 0)
@@ -292,8 +296,15 @@ null_device_write_block (Device * pself, guint size G_GNUC_UNUSED,
 
 static gboolean
 null_device_finish_file(Device * pself) {
+
+    if (!pself->in_file)
+	return TRUE;
+
+    g_mutex_lock(pself->device_mutex);
+    pself->in_file = FALSE;
+    g_mutex_unlock(pself->device_mutex);
+
     if (device_in_error(pself)) return FALSE;
 
-    pself->in_file = FALSE;
     return TRUE;
 }

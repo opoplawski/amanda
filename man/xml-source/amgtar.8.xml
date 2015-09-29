@@ -77,6 +77,11 @@ The directory where gnutar stores the database it uses to generate incremental d
 The path to the gnutar binary.  The default is set when Amanda is built.
 </listitem></varlistentry>
  <!-- ==== -->
+ <varlistentry><term>IGNORE-ZEROS</term><listitem>
+If "YES" (the default), use the <emphasis>--ignore-zeros</emphasis> argument of gtar on recovery,
+set it to "NO" if you do not want that argument.
+</listitem></varlistentry>
+ <!-- ==== -->
  <varlistentry><term>INCLUDE-LIST-GLOB</term><listitem>
 A filename containing include glob expression for the restore command.
 </listitem></varlistentry>
@@ -127,6 +132,7 @@ List all regex (POSIX Extended Regular Expression syntax) that are normal output
   ": File .* shrunk by [0-9][0-9]* bytes, padding with zeros"
   ": Cannot add file .*: No such file or directory$"
   ": Error exit delayed from previous errors"
+  ": directory is on a different filesystem; not dumped"
 </programlisting>
 <para>To treat one of these default patterns differently, specify it explicitly in a different property.</para>
 </listitem></varlistentry>
@@ -218,7 +224,7 @@ A dumptype using this application might look like:
   }
 </programlisting>
 Note that the <emphasis>program</emphasis> parameter must be set to
-<emphasis>"APPLCIATION"</emphasis> to use the <emphasis>application</emphasis>
+<emphasis>"APPLICATION"</emphasis> to use the <emphasis>application</emphasis>
 parameter.
 </para>
 </refsect1>

@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 # 
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published 
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 # 
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -70,6 +71,7 @@ my $opt_timestamp;
 my $opt_verbose = 0;
 my $config_overrides = new_config_overrides($#ARGV+1);
 
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw(bundling));
 GetOptions(
     'version' => \&Amanda::Util::version_opt,
@@ -105,6 +107,10 @@ use vars qw( @ISA );
 
 sub new {
     my $class = shift;
+
+    if (!-r STDIN) {
+	return undef;
+    }
 
     my $self = {
 	input_src => undef};
@@ -221,7 +227,7 @@ sub find_validation_command {
             "TAR" => [ $Amanda::Constants::GNUTAR, qw(--ignore-zeros -tf -) ],
             "GTAR" => [ $Amanda::Constants::GNUTAR, qw(--ignore-zeros -tf -) ],
             "GNUTAR" => [ $Amanda::Constants::GNUTAR, qw(--ignore-zeros -tf -) ],
-            "SMBCLIENT" => [ $Amanda::Constants::GNUTAR, qw(--ignore-zeros -tf -) ],
+            "SMBCLIENT" => [ $Amanda::Constants::GNUTAR, qw(-tf -) ],
 	    "PKZIP" => undef,
         );
 	if (!exists $validation_programs{$program}) {
@@ -260,7 +266,9 @@ sub main {
     my $all_success = 1;
     my @xfer_errs;
     my %all_filter;
-    my $check_done;
+    my $current_dump;
+    my $recovery_done;
+    my %recovery_params;
 
     my $steps = define_steps
 	cb_ref => \$finished_cb,
@@ -339,6 +347,10 @@ sub main {
 
     step check_dumpfile => sub {
 	my ($dump) = @_;
+	$current_dump = $dump;
+
+	$recovery_done = 0;
+	%recovery_params = ();
 
 	print "Validating image " . $dump->{hostname} . ":" .
 	    $dump->{diskname} . " dumped " . $dump->{dump_timestamp} . " level ".
@@ -364,11 +376,11 @@ sub main {
 	    if ($hdr->{'srv_encrypt'}) {
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $hdr->{'srv_encrypt'}, $hdr->{'srv_decrypt_opt'} ], 0);
+			[ $hdr->{'srv_encrypt'}, $hdr->{'srv_decrypt_opt'} ], 0, 0, 0, 0);
 	    } elsif ($hdr->{'clnt_encrypt'}) {
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $hdr->{'clnt_encrypt'}, $hdr->{'clnt_decrypt_opt'} ], 0);
+			[ $hdr->{'clnt_encrypt'}, $hdr->{'clnt_decrypt_opt'} ], 0, 0, 0, 0);
 	    } else {
 		return failure("could not decrypt encrypted dump: no program specified",
 			    $finished_cb);
@@ -389,17 +401,17 @@ sub main {
 		# TODO: this assumes that srvcompprog takes "-d" to decrypt
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $hdr->{'srvcompprog'}, "-d" ], 0);
+			[ $hdr->{'srvcompprog'}, "-d" ], 0, 0, 0, 0);
 	    } elsif ($hdr->{'clntcompprog'}) {
 		# TODO: this assumes that clntcompprog takes "-d" to decrypt
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $hdr->{'clntcompprog'}, "-d" ], 0);
+			[ $hdr->{'clntcompprog'}, "-d" ], 0, 0, 0, 0);
 	    } else {
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
 			[ $Amanda::Constants::UNCOMPRESS_PATH,
-			  $Amanda::Constants::UNCOMPRESS_OPT ], 0);
+			  $Amanda::Constants::UNCOMPRESS_OPT ], 0, 0, 0, 0);
 	    }
 
 	    # adjust the header
@@ -411,7 +423,7 @@ sub main {
 	# we need to throw out its stdout
 	my $argv = find_validation_command($hdr);
 	if (defined $argv) {
-	    push @filters, Amanda::Xfer::Filter::Process->new($argv, 0);
+	    push @filters, Amanda::Xfer::Filter::Process->new($argv, 0, 1, 0, 1);
 	}
 
 	# we always throw out stdout
@@ -435,8 +447,8 @@ sub main {
 		    delete $all_filter{$src};
 		    $src->remove();
 		    POSIX::close($fd);
-		    if (!%all_filter and $check_done) {
-			$finished_cb->();
+		    if (!%all_filter and $recovery_done) {
+			$steps->{'filter_done'}->();
 		    }
 		} else {
 		    $buffer .= $b;
@@ -452,7 +464,7 @@ sub main {
 	}
 
 	my $xfer = Amanda::Xfer->new([ $xfer_src, @filters, $xfer_dest ]);
-	$xfer->start($steps->{'handle_xmsg'});
+	$xfer->start($steps->{'handle_xmsg'}, 0, $current_dump->{'bytes'});
 	$clerk->start_recovery(
 	    xfer => $xfer,
 	    recovery_cb => $steps->{'recovery_cb'});
@@ -470,12 +482,17 @@ sub main {
     };
 
     step recovery_cb => sub {
-	my %params = @_;
+	%recovery_params = @_;
+	$recovery_done = 1;
 
+	$steps->{'filter_done'}->() if !%all_filter;
+    };
+
+    step filter_done => sub {
 	# distinguish device errors from validation errors
-	if (@{$params{'errors'}}) {
+	if (@{$recovery_params{'errors'}}) {
 	    print STDERR "While reading from volumes:\n";
-	    print STDERR "$_\n" for @{$params{'errors'}};
+	    print STDERR "$_\n" for @{$recovery_params{'errors'}};
 	    return $steps->{'quit'}->("validation aborted");
 	}
 
@@ -499,27 +516,20 @@ sub main {
 	if ($err) {
 	    $exit_code = 1;
 	    print STDERR $err, "\n";
-	    return $clerk->quit(finished_cb => $steps->{'quit1'}) if defined $clerk;;
-	    return $steps->{'quit1'}->();
+	    return $clerk->quit(finished_cb => $finished_cb) if defined $clerk;
+	    return $finished_cb->();
 	}
 
 	if ($all_success) {
 	    print "All images successfully validated\n";
 	} else {
-	    print "Some images failed to be correclty validated.\n";
+	    print "Some images failed to be correctly validated.\n";
 	    $exit_code = 1;
 	}
 
-	return $clerk->quit(finished_cb => $steps->{'quit1'});
+	return $clerk->quit(finished_cb => $finished_cb);
     };
 
-    step quit1 => sub {
-	$check_done = 1;
-
-	if (!%all_filter) {
-	    $finished_cb->();
-	}
-    }
 }
 
 main(sub { Amanda::MainLoop::quit(); });

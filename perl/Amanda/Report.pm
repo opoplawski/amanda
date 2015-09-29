@@ -1,8 +1,9 @@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -570,7 +571,7 @@ sub get_hosts
     my $self  = shift @_;
     my $cache = $self->{cache};
 
-    $cache->{hosts} = [ keys %{ $self->{data}{disklist} } ]
+    $cache->{hosts} = [ sort keys %{ $self->{data}{disklist} } ]
       if ( !defined $cache->{hosts} );
 
     return @{ $cache->{hosts} };
@@ -580,7 +581,7 @@ sub get_disks
 {
     my $self = shift @_;
     my ($hostname) = @_;
-    return keys %{ $self->{data}{disklist}{$hostname} };
+    return sort keys %{ $self->{data}{disklist}{$hostname} };
 }
 
 sub get_dles
@@ -596,13 +597,6 @@ sub get_dles
         $cache->{dles} = \@dles;
     }
     return @{ $cache->{dles} };
-}
-
-sub xml_output
-{
-    my ( $self, $org, $config ) = @_;
-    use Amanda::Report::xml;
-    return Amanda::Report::xml::make_amreport_xml( $self, $org, $config );
 }
 
 sub get_dle_info
@@ -1068,6 +1062,11 @@ sub _handle_amflush_line
     } elsif ( $type == $L_INFO ) {
         return $self->_handle_info_line( "amflush", $str );
 
+    } elsif ( $type == $L_FINISH ) {
+        my @info = Amanda::Util::split_quoted_strings($str);
+        $self->{flags}{got_finish} = 1;
+        return $amflush_p->{time} = $info[3];
+
     } else {
         return $self->_handle_bogus_line( $P_AMFLUSH, $type, $str );
     }
@@ -1096,6 +1095,11 @@ sub _handle_amvault_line
 
     } elsif ( $type == $L_DISK ) {
         return $self->_handle_disk_line( "amvault", $str );
+
+    } elsif ( $type == $L_FINISH ) {
+        my @info = Amanda::Util::split_quoted_strings($str);
+        $self->{flags}{got_finish} = 1;
+        return $amvault_p->{time} = $info[3];
 
     } else {
         return $self->_handle_bogus_line( $P_AMFLUSH, $type, $str );

@@ -1,8 +1,9 @@
-# Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -256,7 +257,8 @@ my $chg = Amanda::Changer->new("mychanger", tapelist => $tl);
 is($chg->{'config'}->get_property("testprop"), "testval",
     "changer properties are correctly represented");
 is($chg->have_inventory(), 1, "changer have inventory");
-is($chg->make_new_tape_label(), undef, "no make_new_tape_label");
+my @new_tape_label = $chg->make_new_tape_label();
+is_deeply(\@new_tape_label, [undef, "template is not set, you must set autolabel"], "no make_new_tape_label");
 is($chg->make_new_meta_label(), undef, "no make_new_meta_label");
 
 $chg = Amanda::Changer->new("mychanger", tapelist => $tl,

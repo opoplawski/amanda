@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -91,6 +92,11 @@ typedef struct Device {
     /* You can peek at the stuff below, but only subclasses should
        change these values.*/
 
+    /* A mutex to protect field accessed from another thread.
+     * Only get_bytes_read and get_bytes_written are allowed from another
+     * Only in_file, bytes_read and bytes_written are protected */
+    GMutex  *device_mutex;
+
     /* What file, block are we at? (and are we in the middle of a file?) */
     int file;
     guint64 block;
@@ -133,6 +139,10 @@ typedef struct Device {
     gsize max_block_size;
     gsize block_size;
     gsize header_block_size;
+    gboolean allow_take_scribe_from;
+
+    guint64 bytes_read;
+    guint64 bytes_written;
 
     /* surety and source for the block size; if you set block_size directly,
      * set these, too! */
@@ -193,15 +203,30 @@ struct _DeviceClass {
     gboolean (* erase) (Device * self);
     gboolean (* eject) (Device * self);
     gboolean (* finish) (Device * self);
+    guint64  (* get_bytes_read) (Device * self);
+    guint64  (* get_bytes_written) (Device * self);
 
     gboolean (* listen)(Device *self, gboolean for_writing, DirectTCPAddr **addrs);
-    gboolean (* accept)(Device *self, DirectTCPConnection **conn,
-			ProlongProc prolong, gpointer prolong_data);
-    gboolean (* connect)(Device *self, gboolean for_writing, DirectTCPAddr *addrs,
-			DirectTCPConnection **conn, ProlongProc prolong,
-			gpointer prolong_data);
-    gboolean (* write_from_connection)(Device *self, guint64 size, guint64 *actual_size);
-    gboolean (* read_to_connection)(Device *self, guint64 size, guint64 *actual_size);
+    /* The MainLoop must be running, but the following 4 methods must not be
+     * called from an event. they must be called from a different thread.
+     * They return:
+     *   0 - success
+     *   1 - failed
+     *   2 - interupted
+     */
+    int (* accept)(Device *self, DirectTCPConnection **conn,
+			int *cancelled, GMutex *abort_mutex, GCond *abort_cond);
+    int (* connect)(Device *self, gboolean for_writing,
+			DirectTCPAddr *addrs, DirectTCPConnection **conn,
+			int *cancelled,
+			GMutex *abort_mutex, GCond *abort_cond);
+    int (* write_from_connection)(Device *self, guint64 size,
+			guint64 *actual_size, int *cancelled,
+			GMutex *abort_mutex, GCond *abort_cond);
+    int (* read_to_connection)(Device *self, guint64 size,
+			guint64 *actual_size, int *cancelled,
+			GMutex *abort_mutex, GCond *abort_cond);
+
     gboolean (* use_connection)(Device *self, DirectTCPConnection *conn);
 
     /* array of DeviceProperty objects for this class, keyed by ID */
@@ -294,6 +319,8 @@ gboolean 	device_start	(Device * self,
                                  DeviceAccessMode mode, char * label,
                                  char * timestamp);
 gboolean 	device_finish	(Device * self);
+guint64 	device_get_bytes_read	(Device * self);
+guint64 	device_get_bytes_written(Device * self);
 gboolean        device_start_file       (Device * self,
                                          dumpfile_t * jobInfo);
 gboolean 	device_write_block	(Device * self,
@@ -329,14 +356,20 @@ gboolean 	device_eject	(Device * self);
 
 #define device_directtcp_supported(self) (DEVICE_GET_CLASS((self))->directtcp_supported)
 gboolean device_listen(Device *self, gboolean for_writing, DirectTCPAddr **addrs);
-gboolean device_accept(Device *self, DirectTCPConnection **conn,
-                ProlongProc prolong, gpointer prolong_data);
-gboolean device_connect(Device *self, gboolean for_writing, DirectTCPAddr *addrs,
-			DirectTCPConnection **conn, ProlongProc prolong,
-			gpointer prolong_data);
-gboolean device_write_from_connection(Device *self, guint64 size, guint64 *actual_size);
-gboolean device_read_to_connection(Device *self, guint64 size, guint64 *actual_size);
+int device_accept(Device *self, DirectTCPConnection **conn,
+			int *cancelled, GMutex *abort_mutex, GCond *abort_cond);
+int device_connect(Device *self, gboolean for_writing,
+			DirectTCPAddr *addrs, DirectTCPConnection **conn,
+			int *cancelled,
+			GMutex *abort_mutex, GCond *abort_cond);
+int device_write_from_connection(Device *self, guint64 size,
+			guint64 *actual_size, int *cancelled,
+			GMutex *abort_mutex, GCond *abort_cond);
+int device_read_to_connection(Device *self, guint64 size,
+			guint64 *actual_size, int *cancelled,
+			GMutex *abort_mutex, GCond *abort_cond);
 gboolean device_use_connection(Device *self, DirectTCPConnection *conn);
+gboolean device_allow_take_scribe_from(Device *self);
 
 /* Protected methods. Don't call these except in subclass implementations. */
 

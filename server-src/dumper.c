@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -73,6 +74,8 @@ struct databuf {
     pid_t encryptpid;		/* valid if fd is pipe to encrypt */
 };
 
+struct databuf *g_databuf = NULL;
+
 typedef struct filter_s {
     int             fd;
     char           *name;
@@ -102,6 +105,7 @@ static kencrypt_type dumper_kencrypt;
 
 static FILE *errf = NULL;
 static char *hostname = NULL;
+static char *maxdumps = NULL;
 am_feature_t *their_features = NULL;
 static char *diskname = NULL;
 static char *qdiskname = NULL, *b64disk;
@@ -124,6 +128,10 @@ static int set_datafd;
 static char *dle_str = NULL;
 static char *errfname = NULL;
 static int   errf_lines = 0;
+static int   max_warnings = 0;
+static char *state_filename = NULL;
+static crc_t crc_data_in;
+static crc_t crc_data_out;
 
 static dumpfile_t file;
 
@@ -306,6 +314,13 @@ xml_check_options(
     } else {
 	srvencrypt = ENCRYPT_NONE;
     }
+
+    if (dle->kencrypt) {
+	dumper_kencrypt = KENCRYPT_WILL_DO;
+    } else {
+	dumper_kencrypt = KENCRYPT_NONE;
+    }
+
     free_dle(dle);
     amfree(o);
 }
@@ -372,6 +387,7 @@ main(
     }
 
     safe_cd(); /* do this *after* config_init() */
+    make_crc_table();
 
     check_running_as(RUNNING_AS_ROOT | RUNNING_AS_UID_ONLY);
 
@@ -448,6 +464,12 @@ main(
 		/*NOTREACHED*/
 	    }
 	    header_port = (in_port_t)atoi(cmdargs->argv[a++]);
+
+	    if(a >= cmdargs->argc) {
+		error(_("error [dumper PORT-DUMP: not enough args: maxdumps]"));
+		/*NOTREACHED*/
+	    }
+	    maxdumps = newstralloc(maxdumps, cmdargs->argv[a++]);
 
 	    if(a >= cmdargs->argc) {
 		error(_("error [dumper PORT-DUMP: not enough args: hostname]"));
@@ -534,6 +556,14 @@ main(
 		error(_("error [dumper PORT-DUMP: not enough args: dataport_list]"));
 	    }
 	    dataport_list = newstralloc(dataport_list, cmdargs->argv[a++]);
+	    if (data_path == DATA_PATH_DIRECTTCP && *dataport_list == '\0') {
+		error(_("error [dumper PORT-DUMP: dataport_list empty for DIRECTTCP]"));
+	    }
+
+	    if(a >= cmdargs->argc) {
+		error(_("error [dumper PORT-DUMP: not enough args: max_warnings]"));
+	    }
+	    max_warnings = atoi(cmdargs->argv[a++]);
 
 	    if(a >= cmdargs->argc) {
 		error(_("error [dumper PORT-DUMP: not enough args: options]"));
@@ -576,6 +606,7 @@ main(
 		break;
 	    }
 	    databuf_init(&db, outfd);
+	    g_databuf = &db;
 
 	    if (am_has_feature(their_features, fe_req_xml))
 		xml_check_options(options); /* note: modifies globals */
@@ -718,6 +749,7 @@ databuf_flush(
     written = full_write(db->fd, db->dataout,
 			(size_t)(db->datain - db->dataout));
     if (written > 0) {
+	crc32_add((uint8_t *)db->dataout, written, &crc_data_out);
 	db->dataout += written;
         dumpbytes += (off_t)written;
     }
@@ -866,6 +898,24 @@ process_dumpline(
 	    return;
 	}
 
+	if (g_str_equal(tok, "state")) {
+	    FILE *statefile;
+	    tok = strtok(NULL, "");
+	    if (tok) {
+		statefile = fopen(state_filename, "a");
+		if (statefile) {
+		    fprintf(statefile, "%s\n", tok);
+		    fclose(statefile);
+		} else {
+		    g_debug("Can't open statefile '%s': %s", state_filename, strerror(errno));
+		}
+	    } else {
+		g_debug("Invalid state");
+	    }
+	    amfree(buf);
+	    return;
+	}
+
 	if (strcmp(tok, "end") == 0) {
 	    SET(status, GOT_ENDLINE);
 	    break;
@@ -1006,14 +1056,18 @@ log_msgout(
 {
     char *line;
     int   count = 0;
+    int   to_unlink = 1;
 
     fflush(errf);
     if (fseeko(errf, 0L, SEEK_SET) < 0) {
 	dbprintf(_("log_msgout: warning - seek failed: %s\n"), strerror(errno));
     }
     while ((line = agets(errf)) != NULL) {
-	if (errf_lines >= 100 && count >= 20)
+	if (max_warnings > 0 && errf_lines >= max_warnings && count >= max_warnings) {
+	    log_add(typ, "Look in the '%s' file for full error messages", errfname);
+	    to_unlink = 0;
 	    break;
+	}
 	if (line[0] != '\0') {
 		log_add(typ, "%s", line);
 	}
@@ -1022,11 +1076,7 @@ log_msgout(
     }
     amfree(line);
 
-    if (errf_lines >= 100) {
-	log_add(typ, "Look in the '%s' file for full error messages", errfname);
-    }
-
-    return errf_lines < 100;
+    return to_unlink;
 }
 
 /* ------------- */
@@ -1182,6 +1232,8 @@ do_dump(
     pid_t indexpid = -1;
     char *m;
     int to_unlink = 1;
+    char *shostname;
+    char *sdiskname;
 
     startclock();
 
@@ -1215,6 +1267,14 @@ do_dump(
 	amfree(errfname);
 	goto failed;
     }
+
+    shostname = sanitise_filename(hostname);
+    sdiskname = sanitise_filename(diskname);
+    state_filename = g_strdup_printf("%s/%s/%s/%s_%d.state",
+		 getconf_str(CNF_INDEXDIR), shostname,
+		 sdiskname, dumper_timestamp, level);
+    amfree(shostname);
+    amfree(sdiskname);
 
     if (streams[INDEXFD].fd != NULL) {
 	indexfile_real = getindexfname(hostname, diskname, dumper_timestamp, level);
@@ -1303,6 +1363,21 @@ do_dump(
 	}
 	amfree(indexfile_tmp);
 	amfree(indexfile_real);
+    }
+
+    /* copy the header in a file on the index dir */
+    if (ISSET(status, HEADER_DONE)) {
+	FILE *a;
+	char *s;
+	char *f = getheaderfname(hostname, diskname, dumper_timestamp, level);
+	a = fopen(f,"w");
+	if (a) {
+	    s = build_header(&file, NULL, DISK_BLOCK_BYTES);
+	    fprintf(a,"%s", s);
+	    g_free(s);
+	    fclose(a);
+	}
+	g_free(f);
     }
 
     if (db->compresspid != -1 && dump_result < 2) {
@@ -1413,6 +1488,7 @@ do_dump(
     if (data_path == DATA_PATH_AMANDA)
 	aclose(db->fd);
 
+    amfree(state_filename);
     amfree(errstr);
     dumpfile_free_data(&file);
 
@@ -1497,6 +1573,9 @@ failed:
 	amfree(indexfile_real);
     }
 
+    amfree(errstr);
+    dumpfile_free_data(&file);
+
     return 0;
 }
 
@@ -1539,19 +1618,18 @@ read_mesgfd(
     default:
 	assert(buf != NULL);
 	add_msg_data(buf, (size_t)size);
-	security_stream_read(streams[MESGFD].fd, read_mesgfd, cookie);
 	break;
     }
 
     if (ISSET(status, GOT_INFO_ENDLINE) && !ISSET(status, HEADER_DONE)) {
 	/* Use the first in the dataport_list */
 	in_port_t data_port;
-	char *data_host = dataport_list;
+	char *data_host = g_strdup(dataport_list);
 	char *s;
 
-	s = strchr(dataport_list, ',');
+	s = strchr(data_host, ',');
 	if (s) *s = '\0';  /* use first data_port */
-	s = strrchr(dataport_list, ':');
+	s = strrchr(data_host, ':');
 	*s = '\0';
 	s++;
 	data_port = atoi(s);
@@ -1560,16 +1638,59 @@ read_mesgfd(
 	/* time to do the header */
 	finish_tapeheader(&file);
 	if (write_tapeheader(db->fd, &file)) {
-	    errstr = newvstrallocf(errstr, _("write_tapeheader: %s"), 
+	    errstr = newvstrallocf(errstr, _("write_tapeheader: %s"),
 				  strerror(errno));
 	    dump_result = 2;
+	    amfree(data_host);
 	    stop_dump();
-	    dumpfile_free_data(&file);
 	    return;
 	}
-	dumpfile_free_data(&file);
 	aclose(db->fd);
 	if (data_path == DATA_PATH_AMANDA) {
+	    /* do indirecttcp */
+	    if (g_str_equal(data_host,"255.255.255.255")) {
+		char buffer[32770];
+		char *s;
+		int size;
+
+		g_debug(_("Sendingd indirect data output stream: %s:%d\n"), data_host, data_port);
+		db->fd = stream_client("localhost", data_port,
+				       STREAM_BUFSIZE, 0, NULL, 0);
+		if (db->fd == -1) {
+                    g_free(errstr);
+                    errstr = g_strdup_printf(_("Can't open indirect data output stream: %s"),
+                                         strerror(errno));
+		    dump_result = 2;
+		    amfree(data_host);
+		    stop_dump();
+		    return;
+		}
+	        size = full_read(db->fd, buffer, 32768);
+		if (size <= 0) {
+		    g_debug("Failed to read from indirect-direct-tcp port: %s",
+			    strerror(errno));
+		    close(db->fd);
+		    dump_result = 2;
+		    amfree(data_host);
+		    stop_dump();
+		    return;
+		}
+		aclose(db->fd);
+		buffer[size++] = ' ';
+                buffer[size] = '\0';
+                if ((s = strchr(buffer, ':')) == NULL) {
+		    g_debug("Failed to parse indirect data output stream: %s", buffer);
+		    dump_result = 2;
+		    amfree(data_host);
+		    stop_dump();
+		    return;
+                }
+		*s++ = '\0';
+		amfree(data_host);
+		data_host = g_strdup(buffer);
+		data_port = atoi(s);
+	    }
+
 	    g_debug(_("Sending data to %s:%d\n"), data_host, data_port);
 	    db->fd = stream_client(data_host, data_port,
 				   STREAM_BUFSIZE, 0, NULL, 0);
@@ -1578,10 +1699,12 @@ read_mesgfd(
 				       _("Can't open data output stream: %s"),
 				       strerror(errno));
 		dump_result = 2;
+		amfree(data_host);
 		stop_dump();
 		return;
 	    }
 	}
+	amfree(data_host);
 
 	dumpsize += (off_t)DISK_BLOCK_KB;
 	headersize += (off_t)DISK_BLOCK_KB;
@@ -1604,8 +1727,10 @@ read_mesgfd(
 		return;
 	    }
 	}
-	security_stream_read(streams[DATAFD].fd, read_datafd, db);
-	set_datafd = 1;
+	if (data_path == DATA_PATH_AMANDA) {
+	    security_stream_read(streams[DATAFD].fd, read_datafd, db);
+	    set_datafd = 1;
+	}
     }
 
     /*
@@ -1653,6 +1778,10 @@ read_datafd(
 	security_stream_close(streams[DATAFD].fd);
 	streams[DATAFD].fd = NULL;
 	aclose(db->fd);
+	g_debug("data in  CRC: %08x:%lld",
+		crc32_finish(&crc_data_in), (long long)crc_data_in.size);
+	g_debug("data out CRC: %08x:%lld",
+		crc32_finish(&crc_data_out), (long long)crc_data_out.size);
 	/*
 	 * If the mesg fd and index fd has also shut down, then we're done.
 	 */
@@ -1661,6 +1790,13 @@ read_datafd(
 	return;
     }
 
+    crc32_add(buf, size, &crc_data_in);
+    if (debug_auth >= 3) {
+	crc_data_in.crc  = crc32_finish(&crc_data_in);
+	g_debug("data in sum CRC: %08x:%lld",
+		crc_data_in.crc, (long long)crc_data_in.size);
+	crc_data_in.crc  = crc32_finish(&crc_data_in);
+    }
     /*
      * We read something.  Add it to the databuf and reschedule for
      * more data.
@@ -1678,8 +1814,6 @@ read_datafd(
      * Reset the timeout for future reads
      */
     timeout(conf_dtimeout);
-
-    security_stream_read(streams[DATAFD].fd, read_datafd, cookie);
 }
 
 /*
@@ -1732,7 +1866,6 @@ read_indexfd(
 	    log_add(L_INFO, _("Index corrupted for %s:%s"), hostname, qdiskname);
 	}
     }
-    security_stream_read(streams[INDEXFD].fd, read_indexfd, cookie);
 }
 
 static void
@@ -1743,8 +1876,6 @@ handle_filter_stderr(
     ssize_t   nread;
     char     *b, *p;
     gint64    len;
-
-    event_release(filter->event);
 
     if (filter->buffer == NULL) {
 	/* allocate initial buffer */
@@ -1768,6 +1899,7 @@ handle_filter_stderr(
 			     filter->allocated_size - filter->first - filter->size - 2);
 
     if (nread <= 0) {
+	event_release(filter->event);
 	aclose(filter->fd);
 	if (filter->size > 0 && filter->buffer[filter->first + filter->size - 1] != '\n') {
 	    /* Add a '\n' at end of buffer */
@@ -1798,9 +1930,6 @@ handle_filter_stderr(
     if (nread <= 0) {
 	g_free(filter->buffer);
 	g_free(filter);
-    } else {
-	filter->event = event_register((event_id_t)filter->fd, EV_READFD,
-				       handle_filter_stderr, filter);
     }
 }
 
@@ -1808,25 +1937,33 @@ handle_filter_stderr(
  * Startup a timeout in the event handler.  If the arg is 0,
  * then remove the timeout.
  */
+static event_handle_t *ev_timeout = NULL;
+static time_t timeout_time;
+
 static void
 timeout(
     time_t seconds)
 {
-    static event_handle_t *ev_timeout = NULL;
+    timeout_time = time(NULL) + seconds;
 
     /*
-     * First, remove a timeout if one is active.
+     * remove a timeout if seconds is 0
      */
-    if (ev_timeout != NULL) {
-	event_release(ev_timeout);
-	ev_timeout = NULL;
+    if (seconds == 0) {
+	if (ev_timeout != NULL) {
+	    event_release(ev_timeout);
+	    ev_timeout = NULL;
+	}
+	return;
     }
 
     /*
-     * Now, schedule a new one if 'seconds' is greater than 0
+     * schedule a timeout if it not already scheduled
      */
-    if (seconds > 0)
-	ev_timeout = event_register((event_id_t)seconds, EV_TIME, timeout_callback, NULL);
+    if (ev_timeout == NULL) {
+	ev_timeout = event_register((event_id_t)seconds, EV_TIME,
+				     timeout_callback, NULL);
+    }
 }
 
 /*
@@ -1837,7 +1974,19 @@ static void
 timeout_callback(
     void *	unused)
 {
+    time_t now = time(NULL);
     (void)unused;	/* Quiet unused parameter warning */
+
+    if (ev_timeout != NULL) {
+	event_release(ev_timeout);
+	ev_timeout = NULL;
+    }
+
+    if (timeout_time > now) { /* not a data timeout yet */
+	ev_timeout = event_register((event_id_t)(timeout_time-now), EV_TIME,
+				    timeout_callback, NULL);
+	return;
+    }
 
     assert(unused == NULL);
     errstr = newstralloc(errstr, _("data timeout"));
@@ -1858,8 +2007,15 @@ stop_dump(void)
     /* Check if I have a pending ABORT command */
     cmdargs = get_pending_cmd();
     if (cmdargs) {
+	if (cmdargs->cmd == QUIT) {
+	    g_debug("Got unexpected QUIT");
+	    log_add(L_FAIL, "%s %s %s %d [Killed while dumping]",
+		    hostname, qdiskname, dumper_timestamp, level);
+	    exit(1);
+	}
 	if (cmdargs->cmd != ABORT) {
-	    error(_("beurk %d"), cmdargs->cmd);
+	    g_debug("Expected an ABORT command");
+	    exit(1);
 	}
 	amfree(errstr);
 	errstr = stralloc(cmdargs->argv[1]);
@@ -1873,6 +2029,7 @@ stop_dump(void)
 	}
     }
     aclose(indexout);
+    aclose(g_databuf->fd);
     timeout(0);
 }
 
@@ -1909,6 +2066,12 @@ runcompress(
 	return (-1);
     }
 
+    if (comptype != COMP_SERVER_CUST) {
+	g_debug("execute: %s %s", COMPRESS_PATH,
+		comptype == COMP_BEST ? COMPRESS_BEST_OPT : COMPRESS_FAST_OPT);
+    } else {
+	g_debug("execute: %s", srvcompprog);
+    }
     switch (*pid = fork()) {
     case -1:
 	errstr = newvstrallocf(errstr, _("couldn't fork: %s"), strerror(errno));
@@ -1932,7 +2095,6 @@ runcompress(
 	filter->allocated_size = 0;
 	filter->event = event_register((event_id_t)filter->fd, EV_READFD,
 				       handle_filter_stderr, filter);
-g_debug("event register %s %d", name, filter->fd);
 	return (rval);
     case 0:
 	close(outpipe[1]);
@@ -2005,6 +2167,7 @@ runencrypt(
 	return (-1);
     }
 
+    g_debug("execute: %s", srv_encrypt);
     switch (*pid = fork()) {
     case -1:
 	errstr = newvstrallocf(errstr, _("couldn't fork: %s"), strerror(errno));
@@ -2031,7 +2194,6 @@ runencrypt(
 	filter->allocated_size = 0;
 	filter->event = event_register((event_id_t)filter->fd, EV_READFD,
 				       handle_filter_stderr, filter);
-g_debug("event register %s %d", "encrypt data", filter->fd);
 	return (rval);
 	}
     case 0: {
@@ -2323,6 +2485,7 @@ startup_dump(
     const security_driver_t *secdrv;
     char *application_api;
     int has_features;
+    int has_maxdumps;
     int has_hostname;
     int has_device;
     int has_config;
@@ -2336,8 +2499,11 @@ startup_dump(
 
     has_features = am_has_feature(their_features, fe_req_options_features);
     has_hostname = am_has_feature(their_features, fe_req_options_hostname);
+    has_maxdumps = am_has_feature(their_features, fe_req_options_maxdumps);
     has_config   = am_has_feature(their_features, fe_req_options_config);
     has_device   = am_has_feature(their_features, fe_sendbackup_req_device);
+    crc32_init(&crc_data_in);
+    crc32_init(&crc_data_out);
 
     /*
      * Default to bsd authentication if none specified.  This is gross.
@@ -2358,6 +2524,9 @@ startup_dump(
 		    has_features ? "features=" : "",
 		    has_features ? our_feature_string : "",
 		    has_features ? ";" : "",
+		    has_maxdumps ? "maxdumps=" : "",
+		    has_maxdumps ? maxdumps : "",
+		    has_maxdumps ? ";" : "",
 		    has_hostname ? "hostname=" : "",
 		    has_hostname ? hostname : "",
 		    has_hostname ? ";" : "",
@@ -2384,7 +2553,7 @@ startup_dump(
 	}
 	vstrextend(&p, "  <level>", level_string, "</level>\n", NULL);
 	vstrextend(&p, options+1, "</dle>\n", NULL);
-	pclean = clean_dle_str_for_client(p);
+	pclean = clean_dle_str_for_client(p, their_features);
 	vstrextend(&req, pclean, NULL);
 	amfree(pclean);
 	dle_str = p;

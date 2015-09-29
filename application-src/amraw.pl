@@ -1,9 +1,10 @@
 #!@PERL@ 
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -140,6 +141,10 @@ sub command_estimate {
     }
 
     my $fd = POSIX::open($self->{device}, &POSIX::O_RDONLY);
+    if (!defined $fd) {
+	$self->print_to_server_and_die("Can't open '$self->{device}': $!",
+				       $Amanda::Script_App::ERROR);
+    }
     my $size = 0;
     my $s;
     my $buffer;
@@ -192,6 +197,10 @@ sub command_backup {
     }
 
     my $fd = POSIX::open($self->{device}, &POSIX::O_RDONLY);
+    if (!defined $fd) {
+	$self->print_to_server_and_die("Can't open '$self->{device}': $!",
+				       $Amanda::Script_App::ERROR);
+    }
     my $size = 0;
     my $s;
     my $buffer;
@@ -232,9 +241,10 @@ sub command_restore {
     # include-list and exclude-list are ignored, the complete dle is restored.
 
     $device = "amraw-restored" if !defined $device;
+    debug("Restoring to $device");
 
     my $fd = POSIX::open($device, &POSIX::O_CREAT | &POSIX::O_RDWR, 0600 );
-    if ($fd == -1) {
+    if (!defined $fd) {
 	$self->print_to_server_and_die("Can't open '$device': $!",
 				       $Amanda::Script_App::ERROR);
     }
@@ -296,7 +306,7 @@ GetOptions(
     'calcsize'           => \$opt_calcsize,
     'include-list=s'     => \@opt_include_list,
     'exclude-list=s'     => \@opt_exclude_list,
-    'directory'          => \$opt_directory,
+    'directory=s'        => \$opt_directory,
 ) or usage();
 
 if (defined $opt_version) {

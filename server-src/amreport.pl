@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -34,7 +35,6 @@ use Amanda::Disklist;
 use Amanda::Constants;
 use Amanda::Debug qw( debug warning );
 use Amanda::Report;
-use Amanda::Report::human;
 use Amanda::Logfile qw( find_latest_log);
 
 # constants for dealing with outputs
@@ -56,6 +56,7 @@ use constant MODE_CMDLINE => 2;
 
 my $opt_nomail = 0;
 my ($opt_mailto, $opt_filename, $opt_logfname, $opt_psfname, $opt_xml);
+my $from_amdump = 1;
 my ($config_name, $report, $outfh);
 my $mode = MODE_NONE;
 
@@ -173,20 +174,10 @@ sub get_default_logfile
 
 sub apply_output_defaults
 {
-    my $ttyp         = getconf($CNF_TAPETYPE);
-    my $tt           = lookup_tapetype($ttyp) if $ttyp;
-    my $cfg_template = "" . tapetype_getconf($tt, $TAPETYPE_LBL_TEMPL) if $tt;
-
     my $cfg_printer = getconf($CNF_PRINTER);
     my $cfg_mailto = getconf_seen($CNF_MAILTO) ? getconf($CNF_MAILTO) : undef;
 
     foreach my $job (@output_queue) {
-
-	# supply the configured template if none was given.
-        if (   $job->[FORMAT]->[FMT_TYP] eq 'postscript'
-            && !$job->[FORMAT]->[FMT_TEMPLATE]) {
-            $job->[FORMAT]->[FMT_TEMPLATE] = $cfg_template;
-        }
 
 	# apply default destinations for each destination type
         if (!$job->[OUTPUT][OUT_DST]) {
@@ -283,6 +274,7 @@ sub legacy_send_amreport
     if ($cfg_send == $SEND_AMREPORT_STRANGE) {
 
         if (   !$report->get_flag("got_finish")
+            || ($report->get_flag("exit_status") != 0)
 	    || ($report->get_flag("dump_failed") != 0)
 	    || ($report->get_flag("results_missing") != 0)
 	    || ($report->get_flag("dump_strange") != 0)) {
@@ -299,10 +291,9 @@ sub legacy_send_amreport
     } elsif ($cfg_send = $SEND_AMREPORT_ERROR) {
 
         if (   !$report->get_flag("got_finish")
-            || ($report->get_flag("exit_status") != 0)
+            || ($report->get_flag("exit_status") != 0 && $report->get_flag("exit_status") != 2)
             || ($report->get_flag("dump_failed") != 0)
-            || ($report->get_flag("results_missing") != 0)
-            || ($report->get_flag("dump_strange") != 0)) {
+            || ($report->get_flag("results_missing") != 0)) {
 
             debug("send-amreport-on=$cfg_send, condition filled for $output_name");
             $send_amreport = 1;
@@ -464,18 +455,34 @@ sub run_output {
     # with legacy behavior.
 
     if (defined $fh) {
-	# TODO: modularize these better
-	if ($reportspec->[0] eq 'xml') {
-	    print $fh $report->xml_output("" . getconf($CNF_ORG), $config_name);
-	} elsif ($reportspec->[0] eq 'human') {
-	    my $hr = Amanda::Report::human->new($report, $fh, $config_name,
-						$opt_logfname );
-	    $hr->print_human_amreport();
-	} elsif ($reportspec->[0] eq 'postscript') {
-	    use Amanda::Report::postscript;
-	    my $rep = Amanda::Report::postscript->new($report, $config_name,
-						      $opt_logfname );
-	    $rep->write_report($fh);
+	my $fail_to_load = 0;
+	my $report_name = $reportspec->[0];
+	my $pkgname = "Amanda::Report::$report_name";
+	my $filename = $pkgname;
+	$filename =~ s|::|/|g;
+	$filename .= '.pm';
+
+	if (!exists $INC{$filename}) {
+	    eval "use $pkgname;";
+	    if ($@) {
+		my $err = $@;
+		# determine whether the module doesn't exist at all, or if
+		# there was an error loading it;
+		if (exists $INC{$filename} or
+		    $err =~ /did not return a true value/) {
+		    print STDERR "$err";
+		    $fail_to_load = 1;
+		}
+	    }
+	}
+	if (!$fail_to_load) {
+	    my $rep = eval {$pkgname->new($report, $config_name,
+						   $opt_logfname);};
+	    if ($@) {
+		print STDERR "$@\n";
+	    } else {
+		$rep->write_report($fh);
+	    }
 	}
 
 	close $fh;
@@ -498,6 +505,7 @@ Amanda::Util::setup_application("amreport", "server", $CONTEXT_CMDLINE);
 
 my $config_overrides = new_config_overrides( scalar(@ARGV) + 1 );
 
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw/bundling/);
 GetOptions(
 
@@ -511,7 +519,7 @@ GetOptions(
     "o=s" => sub { add_config_override_opt($config_overrides, $_[1]); },
 
     ## trigger default amdump behavior
-    "from-amdump" => sub { set_mode(MODE_SCRIPT) },
+    "from-amdump" => sub { set_mode(MODE_SCRIPT); $from_amdump = 1 },
 
     ## new configuration opts
     "log=s" => sub { set_mode(MODE_CMDLINE); $opt_logfname = $_[1]; },
@@ -520,6 +528,13 @@ GetOptions(
     "text:s"      => sub { opt_push_queue([ ['human'], [ 'file', $_[1] ] ]); },
     "xml:s"       => sub { opt_push_queue([ ['xml'],   [ 'file', $_[1] ] ]); },
     "print:s"     => sub { opt_push_queue([ [ 'postscript' ], [ 'printer', $_[1] ] ]); },
+    "format:s"    => sub {
+			   my ($module, $destination) = split ':', $_[1];
+			   my ($mod, $mod_arg) = split ',', $module;
+			   my ($dest, $dest_arg) = split ',', $destination;
+			   $dest = 'file' if !defined $dest;
+			   opt_push_queue([ [$mod, $mod_arg], [$dest, $dest_arg ] ]);
+			 },
 
     'version' => \&Amanda::Util::version_opt,
     'help'    => \&usage,
@@ -576,7 +591,19 @@ if ($mode == MODE_CMDLINE) {
     push @outputs, [ ['human'], [ 'file', '-' ] ] if !@outputs;
 } else {
     debug("operating in script mode");
-    calculate_legacy_outputs();
+    my $cnf_report_format = getconf($CNF_REPORT_FORMAT);
+    if ($from_amdump && @{$cnf_report_format}) {
+	for my $report_format (@{$cnf_report_format}) {
+	    my ($module, $destination) = split ':', $report_format;
+	    my ($mod, $mod_arg) = split ',', $module;
+	    my ($dest, $dest_arg) = split ',', $destination;
+	    $dest = 'file' if !defined $dest;
+	    push @output_queue,[[$mod, $mod_arg], [$dest, $dest_arg ] ];
+	}
+	apply_output_defaults();
+    } else {
+	calculate_legacy_outputs();
+    }
 }
 
 ## Parse the report & set output

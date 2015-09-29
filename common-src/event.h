@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -85,6 +86,8 @@ typedef void (*event_fn_t)(void *);
  * caller calling event_loop() often enough.
  */
 event_handle_t *event_register(event_id_t, event_type_t, event_fn_t, void *);
+event_handle_t *event_create(event_id_t, event_type_t, event_fn_t, void *);
+void event_activate(event_handle_t *);
 
 /*
  * Release an event handler.

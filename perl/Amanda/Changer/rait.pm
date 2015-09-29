@@ -1,8 +1,9 @@
-# Copyright (c) 2009,2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -20,6 +21,7 @@ package Amanda::Changer::rait;
 
 use strict;
 use warnings;
+use Carp;
 use vars qw( @ISA );
 @ISA = qw( Amanda::Changer );
 
@@ -266,6 +268,7 @@ sub _make_res {
     }
 
     my $combined_res = Amanda::Changer::rait::Reservation->new(
+	$self,
 	$kid_reservations, $rait_device);
     $rait_device->read_label();
 
@@ -525,7 +528,7 @@ sub _for_each_child {
 	($params{'oksub'}, $params{'errsub'}, $params{'parent_cb'}, $params{'args'});
 
     if (defined($args)) {
-	die "number of args did not match number of children"
+	confess "number of args did not match number of children"
 	    unless (@$args == $self->{'num_children'});
     } else {
 	$args = [ ( undef ) x $self->{'num_children'} ];
@@ -674,14 +677,18 @@ sub errmap (&@) {
 
 sub new {
     my $class = shift;
-    my ($child_reservations, $rait_device) = @_;
+    my ($chg, $child_reservations, $rait_device) = @_;
     my $self = Amanda::Changer::Reservation::new($class);
+
+    $self->{'chg'} = $chg;
 
     # note that $child_reservations may contain "ERROR" in place of a reservation
 
     $self->{'child_reservations'} = $child_reservations;
 
     $self->{'device'} = $rait_device;
+    my @barcodes = errmap { defined($_->{'barcode'}) ? "" . $_->{'barcode'} : "" } @$child_reservations;
+    $self->{'barcode'} = collapse_braced_alternates(\@barcodes);
 
     my @slot_names;
     @slot_names = errmap { "" . $_->{'this_slot'} } @$child_reservations;

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-2000 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -58,6 +59,8 @@ static int overwrite;
 static disklist_t origq;
 
 static uid_t uid_dumpuser;
+static gboolean who_check_host_setting = TRUE;//  TRUE => local check auth
+                                      // FALSE => clent check auth
 
 /* local functions */
 
@@ -67,11 +70,12 @@ pid_t start_server_check(int fd, int do_localchk, int do_tapechk);
 int main(int argc, char **argv);
 int check_tapefile(FILE *outf, char *tapefile);
 int test_server_pgm(FILE *outf, char *dir, char *pgm, int suid, uid_t dumpuid);
+static int check_host_setting(FILE *outf);
 
 void
 usage(void)
 {
-    g_printf(_("Usage: amcheck [--version] [-am] [-w] [-sclt] [-M <address>] [--client-verbose] [-o configoption]* <conf> [host [disk]* ]*\n"));
+    g_printf(_("Usage: amcheck [--version] [-am] [-w] [-sclt] [-M <address>] [--client-verbose] [--exact_match] [-o configoption]* <conf> [host [disk]* ]*\n"));
     exit(1);
     /*NOTREACHED*/
 }
@@ -80,11 +84,15 @@ static am_feature_t *our_features = NULL;
 static char *our_feature_string = NULL;
 static char *displayunit;
 static long int unitdivisor;
+static gboolean dev_amanda_data_path = TRUE;
+static gboolean dev_directtcp_data_path = TRUE;
 
 static int client_verbose = FALSE;
+static gboolean exact_match = FALSE;
 static struct option long_options[] = {
     {"client-verbose", 0, NULL,  1},
     {"version"       , 0, NULL,  2},
+    {"exact-match"   , 0, NULL,  3},
     {NULL, 0, NULL, 0}
 };
 
@@ -123,12 +131,13 @@ main(
      *   1) Only set the message locale for now.
      *   2) Set textdomain for all amanda related programs to "amanda"
      *      We don't want to be forced to support dozens of message catalogs.
-     */  
+     */
     setlocale(LC_MESSAGES, "C");
-    textdomain("amanda"); 
+    textdomain("amanda");
 
     safe_fd(-1, 0);
     safe_cd();
+    make_crc_table();
 
     set_pname("amcheck");
     /* drop root privileges */
@@ -174,6 +183,8 @@ main(
 	case 2:		printf("amcheck-%s\n", VERSION);
 			return(0);
 			break;
+	case 3:		exact_match = TRUE;
+			break;
 	case 'M':	if (mailto) {
 			    g_printf(_("Multiple -M options\n"));
 			    exit(1);
@@ -184,11 +195,9 @@ main(
 			   exit(1);
 			}
 			/*FALLTHROUGH*/
-	case 'm':	
-			mailout = 1;
+	case 'm':	mailout = 1;
 			break;
-	case 'a':	
-			mailout = 1;
+	case 'a':	mailout = 1;
 			alwaysmail = 1;
 			break;
 	case 's':	do_localchk = do_tapechk = 1;
@@ -245,40 +254,40 @@ main(
 	}
 	exit(1);
     }
-    if(mailout && !mailto && 
+    if(mailout && !mailto &&
        (getconf_seen(CNF_MAILTO)==0 || strlen(getconf_str(CNF_MAILTO)) == 0)) {
 	g_printf(_("\nWARNING:No mail address configured in  amanda.conf.\n"));
 	g_printf(_("To receive dump results by email configure the "
 		 "\"mailto\" parameter in amanda.conf\n"));
-        if(alwaysmail)        
- 		g_printf(_("When using -a option please specify -Maddress also\n\n")); 
+        if(alwaysmail)
+		g_printf(_("When using -a option please specify -Maddress also\n\n"));
 	else
- 		g_printf(_("Use -Maddress instead of -m\n\n")); 
+		g_printf(_("Use -Maddress instead of -m\n\n"));
 	exit(1);
     }
     if(mailout && !mailto)
-    { 
-       if(getconf_seen(CNF_MAILTO) && 
+    {
+       if(getconf_seen(CNF_MAILTO) &&
           strlen(getconf_str(CNF_MAILTO)) > 0) {
           if(!validate_mailto(getconf_str(CNF_MAILTO))){
-		g_printf(_("\nMail address in amanda.conf has invalid characters")); 
-		g_printf(_("\nNo email will be sent\n")); 
+		g_printf(_("\nMail address in amanda.conf has invalid characters"));
+		g_printf(_("\nNo email will be sent\n"));
                 mailout = 0;
           }
        }
        else {
 	  g_printf(_("\nNo mail address configured in  amanda.conf\n"));
-          if(alwaysmail)        
- 		g_printf(_("When using -a option please specify -Maddress also\n\n")); 
+          if(alwaysmail)
+		g_printf(_("When using -a option please specify -Maddress also\n\n"));
 	  else
- 		g_printf(_("Use -Maddress instead of -m\n\n")); 
+		g_printf(_("Use -Maddress instead of -m\n\n"));
 	  exit(1);
       }
     }
 
     conf_ctimeout = (time_t)getconf_int(CNF_CTIMEOUT);
 
-    errstr = match_disklist(&origq, argc-1, argv+1);
+    errstr = match_disklist(&origq, exact_match, argc-1, argv+1);
     if (errstr) {
 	g_printf(_("%s"),errstr);
 	amfree(errstr);
@@ -344,6 +353,8 @@ main(
     else
 	/* just use stdout */
 	mainfd = 1;
+
+    who_check_host_setting = do_localchk;
 
     /* start server side checks */
 
@@ -448,8 +459,8 @@ main(
 	}
 	if(mailto) {
 	    a = (char **) g_new0(char *, 2);
-	    a[1] = stralloc(mailto);
-	    a[2] = NULL;
+	    a[0] = stralloc(mailto);
+	    a[1] = NULL;
 	} else {
 	    /* (note that validate_mailto doesn't allow any quotes, so this
 	     * is really just splitting regular old strings) */
@@ -619,10 +630,13 @@ test_server_pgm(
 /* check that the tape is a valid amanda tape
    Returns TRUE if all tests passed; FALSE otherwise. */
 static gboolean test_tape_status(FILE * outf) {
+    int dev_outfd = -1;
+    FILE *dev_outf = NULL;
     int outfd;
     int nullfd = -1;
     pid_t devpid;
     char *amcheck_device = NULL;
+    char *line;
     gchar **args;
     amwait_t wait_status;
     gboolean success;
@@ -642,15 +656,45 @@ static gboolean test_tape_status(FILE * outf) {
 	args[2] = g_strdup("-w");
 
     /* run libexecdir/amcheck-device.pl, capturing STDERR and STDOUT to outf */
-    devpid = pipespawnv(amcheck_device, 0, 0,
-	    &nullfd, &outfd, &outfd,
+    devpid = pipespawnv(amcheck_device, STDOUT_PIPE, 0,
+	    &nullfd, &dev_outfd, &outfd,
 	    (char **)args);
+
+    dev_outf = fdopen(dev_outfd, "r");
+    if (dev_outf == NULL) {
+	g_debug("Can't fdopen amcheck-device stdout: %s", strerror(errno));
+	aclose(dev_outfd);
+    } else {
+	while ((line = agets(dev_outf)) != NULL) {
+	    if (strncmp(line, "DATA-PATH", 9) == 0) {
+		char *c = line;
+		dev_amanda_data_path = FALSE;
+		dev_directtcp_data_path = FALSE;
+		while ((c = strchr(c, ' ')) != NULL) {
+		    c++;
+		    if (strncmp(c, "AMANDA", 6) == 0) {
+			dev_amanda_data_path = TRUE;
+		    } else if (strncmp(c, "DIRECTTCP", 9) == 0) {
+			dev_directtcp_data_path = TRUE;
+		    }
+		}
+	    } else {
+		if (full_write(outfd, line, strlen(line)) != strlen(line)) {
+		    g_debug("Failed to print amcheck-device output to stdout: %s", strerror(errno));
+		}
+		if (full_write(outfd, "\n", 1) != 1) {
+		    g_debug("Failed to print amcheck-device \\n to stdout: %s", strerror(errno));
+		}
+	    }
+	    g_free(line);
+	}
+    }
 
     /* and immediately wait for it to die */
     waitpid(devpid, &wait_status, 0);
 
     if (WIFSIGNALED(wait_status)) {
-	g_fprintf(outf, _("amcheck-device terminated with signal %d"),
+	g_fprintf(outf, _("amcheck-device terminated with signal %d\n"),
 		  WTERMSIG(wait_status));
 	success = FALSE;
     } else if (WIFEXITED(wait_status)) {
@@ -689,21 +733,21 @@ start_server_check(
 
     switch(pid = fork()) {
     case -1:
-    	error(_("could not spawn a process for checking the server: %s"), strerror(errno));
+	error(_("could not spawn a process for checking the server: %s"), strerror(errno));
         g_assert_not_reached();
-        
+
     case 0:
-    	break;
-        
+	break;
+
     default:
 	return pid;
     }
-    
+
     dup2(fd, 1);
     dup2(fd, 2);
-    
+
     set_pname("amcheck-server");
-    
+
     startclock();
 
     /* server does not need root privileges, and the access() calls below use the real userid,
@@ -721,6 +765,10 @@ start_server_check(
 
     if (do_localchk || testtape) {
         tp = lookup_tapetype(getconf_str(CNF_TAPETYPE));
+    }
+
+    if (who_check_host_setting) {
+	check_host_setting(outf);
     }
 
     /*
@@ -785,13 +833,24 @@ start_server_check(
 			"the 'tapetype' parameter\n"));
 	    confbad = 1;
 	}
+
+	{
+	    uintmax_t kb_avail = physmem_total() / 1024;
+	    uintmax_t kb_needed = getconf_size(CNF_DEVICE_OUTPUT_BUFFER_SIZE) / 1024;
+	    if (kb_avail < kb_needed) {
+		g_fprintf(outf,
+		    "ERROR: system has %ju %sB memory, but device-output-buffer-size needs %ju %sB\n",
+		kb_avail/(uintmax_t)unitdivisor, displayunit,
+		kb_needed/(uintmax_t)unitdivisor, displayunit);
+	    }
+	}
     }
 
     /*
      * Look up the programs used on the server side.
      */
     if(do_localchk) {
-	/* 
+	/*
 	 * entreprise version will do planner/dumper suid check
 	 */
 	if(access(amlibexecdir, X_OK) == -1) {
@@ -873,7 +932,7 @@ start_server_check(
 	}
 	if(access(tape_dir, W_OK) == -1) {
 	    quoted = quote_string(tape_dir);
-	    g_fprintf(outf, _("ERROR: tapelist dir %s: not writable.\nCheck permissions\n"), 
+	    g_fprintf(outf, _("ERROR: tapelist dir %s: not writable.\nCheck permissions\n"),
 		    quoted);
 	    tapebad = 1;
 	    amfree(quoted);
@@ -1059,7 +1118,7 @@ start_server_check(
 		il != NULL;
 		il = il->next) {
 	    hdp = lookup_holdingdisk(il->data);
-    	    quoted = quote_string(holdingdisk_get_diskdir(hdp));
+	    quoted = quote_string(holdingdisk_get_diskdir(hdp));
 	    if(get_fs_usage(holdingdisk_get_diskdir(hdp), NULL, &fsusage) == -1) {
 		g_fprintf(outf, _("ERROR: holding dir %s (%s), "
 			"you must create a directory.\n"),
@@ -1216,6 +1275,8 @@ start_server_check(
     } else if (do_tapechk) {
 	g_fprintf(outf, _("WARNING: skipping tape test because amdump or amflush seem to be running\n"));
 	g_fprintf(outf, _("WARNING: if they are not, you must run amcleanup\n"));
+	dev_amanda_data_path = TRUE;
+	dev_directtcp_data_path = TRUE;
     } else if (logbad == 2) {
 	g_fprintf(outf, _("NOTE: amdump or amflush seem to be running\n"));
 	g_fprintf(outf, _("NOTE: if they are not, you must run amcleanup\n"));
@@ -1223,8 +1284,12 @@ start_server_check(
 	/* we skipped the tape checks, but this is just a NOTE and
 	 * should not result in a nonzero exit status, so reset logbad to 0 */
 	logbad = 0;
+	dev_amanda_data_path = TRUE;
+	dev_directtcp_data_path = TRUE;
     } else {
 	g_fprintf(outf, _("NOTE: skipping tape checks\n"));
+	dev_amanda_data_path = TRUE;
+	dev_directtcp_data_path = TRUE;
     }
 
     /*
@@ -1246,15 +1311,23 @@ start_server_check(
 	int hostindexdir_checked = 0;
 	char *host;
 	char *disk;
-	int conf_tapecycle, conf_runspercycle;
+	int conf_tapecycle;
+	int conf_runspercycle;
+	int conf_runtapes;
 	identlist_t pp_scriptlist;
 
 	conf_tapecycle = getconf_int(CNF_TAPECYCLE);
 	conf_runspercycle = getconf_int(CNF_RUNSPERCYCLE);
+	conf_runtapes = getconf_int(CNF_RUNTAPES);
 
-	if(conf_tapecycle <= conf_runspercycle) {
+	if (conf_tapecycle <= conf_runspercycle) {
 		g_fprintf(outf, _("WARNING: tapecycle (%d) <= runspercycle (%d).\n"),
 			conf_tapecycle, conf_runspercycle);
+	}
+
+	if (conf_tapecycle <= conf_runtapes) {
+		g_fprintf(outf, _("WARNING: tapecycle (%d) <= runtapes (%d).\n"),
+			conf_tapecycle, conf_runtapes);
 	}
 
 	conf_infofile = config_dir_relative(getconf_str(CNF_INFOFILE));
@@ -1270,7 +1343,7 @@ start_server_check(
 		g_fprintf(outf, _("ERROR: conf info dir %s (%s)\n"),
 			quoted, strerror(errno));
 		infobad = 1;
-	    }	
+	    }
 	    amfree(conf_infofile);
 	} else if (!S_ISDIR(statbuf.st_mode)) {
 	    g_fprintf(outf, _("ERROR: info dir %s: not a directory\n"), quoted);
@@ -1309,7 +1382,7 @@ start_server_check(
 			g_fprintf(outf, _("ERROR: host info dir %s (%s)\n"),
 				quoted, strerror(errno));
 			infobad = 1;
-		    }	
+		    }
 		    amfree(hostinfodir);
 		} else if (!S_ISDIR(statbuf.st_mode)) {
 		    g_fprintf(outf, _("ERROR: info dir %s: not a directory\n"),
@@ -1346,7 +1419,7 @@ start_server_check(
 			    g_fprintf(outf, _("ERROR: info dir %s (%s)\n"),
 				    quoted, strerror(errno));
 			    infobad = 1;
-			}	
+			}
 		    } else if (!S_ISDIR(statbuf.st_mode)) {
 			g_fprintf(outf, _("ERROR: info dir %s: not a directory\n"),
 				quoted);
@@ -1366,7 +1439,7 @@ start_server_check(
 			    g_fprintf(outf, _("ERROR: info dir %s (%s)\n"),
 				    quoted, strerror(errno));
 			    infobad = 1;
-			}	
+			}
 		    } else if (!S_ISREG(statbuf.st_mode)) {
 			g_fprintf(outf, _("ERROR: info file %s: not a file\n"),
 				quotedif);
@@ -1393,7 +1466,7 @@ start_server_check(
 				g_fprintf(outf, _("ERROR: index dir %s (%s)\n"),
 					quoted, strerror(errno));
 				indexbad = 1;
-			    }	
+			    }
 			    amfree(conf_indexdir);
 			} else if (!S_ISDIR(statbuf.st_mode)) {
 			    g_fprintf(outf, _("ERROR: index dir %s: not a directory\n"),
@@ -1456,7 +1529,7 @@ start_server_check(
 				    g_fprintf(outf, _("ERROR: index dir %s (%s)\n"),
 					quoted, strerror(errno));
 				    indexbad = 1;
-				}	
+				}
 			    } else if (!S_ISDIR(statbuf.st_mode)) {
 				g_fprintf(outf, _("ERROR: index dir %s: not a directory\n"),
 					quoted);
@@ -1578,6 +1651,18 @@ start_server_check(
 				  hostp->hostname, dp->name);
 			pgmbad = 1;
 		    }
+		}
+		if (dp->data_path == DATA_PATH_DIRECTTCP && !dev_directtcp_data_path) {
+		    g_fprintf(outf,
+			      _("ERROR: %s %s: data-path is DIRECTTCP but device do not support it\n"),
+			      hostp->hostname, dp->name);
+		    pgmbad = 1;
+		}
+		if (dp->data_path == DATA_PATH_AMANDA && !dev_amanda_data_path) {
+		    g_fprintf(outf,
+			      _("ERROR: %s %s: data-path is AMANDA but device do not support it\n"),
+			      hostp->hostname, dp->name);
+		    pgmbad = 1;
 		}
 
 		for (pp_scriptlist = dp->pp_scriptlist; pp_scriptlist != NULL;
@@ -1782,10 +1867,10 @@ start_host(
 	    }
 
 	    b64disk = amxml_format_tag("disk", dp->name);
-	    qdevice = quote_string(dp->device); 
+	    qdevice = quote_string(dp->device);
 	    if (dp->device)
 		b64device = amxml_format_tag("diskdevice", dp->device);
-	    if ((dp->name && qname[0] == '"') || 
+	    if ((dp->name && qname[0] == '"') ||
 		(dp->device && qdevice[0] == '"')) {
 		if(!am_has_feature(hostp->features, fe_interface_quoted_text)) {
 		    g_fprintf(outf,
@@ -1803,24 +1888,24 @@ start_host(
 		     _("ERROR: %s:%s (%s): selfcheck does not support device.\n"),
 		     hostp->hostname, qname, dp->device);
 		    g_fprintf(outf, _("You must upgrade amanda on the client to "
-				    "specify a diskdevice in the disklist "	
-				    "or don't specify a diskdevice in the disklist.\n"));	
+				    "specify a diskdevice in the disklist "
+				    "or don't specify a diskdevice in the disklist.\n"));
 		}
 		if(!am_has_feature(hostp->features, fe_sendsize_req_device)) {
 		    g_fprintf(outf,
 		     _("ERROR: %s:%s (%s): sendsize does not support device.\n"),
 		     hostp->hostname, qname, dp->device);
 		    g_fprintf(outf, _("You must upgrade amanda on the client to "
-				    "specify a diskdevice in the disklist"	
-				    " or don't specify a diskdevice in the disklist.\n"));	
+				    "specify a diskdevice in the disklist"
+				    " or don't specify a diskdevice in the disklist.\n"));
 		}
 		if(!am_has_feature(hostp->features, fe_sendbackup_req_device)) {
 		    g_fprintf(outf,
 		     _("ERROR: %s:%s (%s): sendbackup does not support device.\n"),
 		     hostp->hostname, qname, dp->device);
 		    g_fprintf(outf, _("You must upgrade amanda on the client to "
-				    "specify a diskdevice in the disklist"	
-				    " or don't specify a diskdevice in the disklist.\n"));	
+				    "specify a diskdevice in the disklist"
+				    " or don't specify a diskdevice in the disklist.\n"));
 		}
 
 		if (dp->data_path != DATA_PATH_AMANDA &&
@@ -1836,21 +1921,21 @@ start_host(
 		}
 	    }
 	    if (dp->program &&
-	        (strcmp(dp->program,"DUMP") == 0 || 
+	        (strcmp(dp->program,"DUMP") == 0 ||
 	         strcmp(dp->program,"GNUTAR") == 0)) {
 		if(strcmp(dp->program, "DUMP") == 0 &&
 		   !am_has_feature(hostp->features, fe_program_dump)) {
 		    g_fprintf(outf, _("ERROR: %s:%s does not support DUMP.\n"),
 			    hostp->hostname, qname);
 		    g_fprintf(outf, _("You must upgrade amanda on the client to use DUMP "
-				    "or you can use another program.\n"));	
+				    "or you can use another program.\n"));
 		}
 		if(strcmp(dp->program, "GNUTAR") == 0 &&
 		   !am_has_feature(hostp->features, fe_program_gnutar)) {
 		    g_fprintf(outf, _("ERROR: %s:%s does not support GNUTAR.\n"),
 			    hostp->hostname, qname);
 		    g_fprintf(outf, _("You must upgrade amanda on the client to use GNUTAR "
-				    "or you can use another program.\n"));	
+				    "or you can use another program.\n"));
 		}
 		estimate = (estimate_t)GPOINTER_TO_INT(dp->estimatelist->data);
 		if(estimate == ES_CALCSIZE &&
@@ -1885,15 +1970,15 @@ start_host(
 			    hostp->hostname);
 		    g_fprintf(outf, _("You must upgrade amanda on the client to use encryption program.\n"));
 		    remote_errors++;
-		  } else if ( dp->compress == COMP_SERVER_FAST || 
+		  } else if ( dp->compress == COMP_SERVER_FAST ||
 			      dp->compress == COMP_SERVER_BEST ||
 			      dp->compress == COMP_SERVER_CUST ) {
 		    g_fprintf(outf,
 			    _("ERROR: %s: Client encryption with server compression "
-			      "is not supported. See amanda.conf(5) for detail.\n"), 
+			      "is not supported. See amanda.conf(5) for detail.\n"),
 			    hostp->hostname);
 		    remote_errors++;
-		  } 
+		  }
 		}
 		if (am_has_feature(hostp->features, fe_req_xml)) {
 		    l = vstralloc("<dle>\n"
@@ -1948,7 +2033,7 @@ start_host(
 			    g_fprintf(outf,
 			      _("ERROR: application '%s' not found.\n"), dp->application);
 			} else {
-		    	    char *client_name = application_get_client_name(application);
+			    char *client_name = application_get_client_name(application);
 			    if (client_name && strlen(client_name) > 0 &&
 				!am_has_feature(hostp->features, fe_application_client_name)) {
 				g_fprintf(outf,
@@ -2028,7 +2113,7 @@ start_host(
 	fprintf(stderr, _("Could not find security driver \"%s\" for host \"%s\". auth for this dle is invalid\n"),
 	      hostp->disks->auth, hostp->hostname);
     } else {
-	protocol_sendreq(hostp->hostname, secdrv, amhost_get_security_conf, 
+	protocol_sendreq(hostp->hostname, secdrv, amhost_get_security_conf,
 			 req, conf_ctimeout, handle_result, hostp);
     }
 
@@ -2049,11 +2134,11 @@ start_client_checks(
 
     switch(pid = fork()) {
     case -1:
-    	error(_("INTERNAL ERROR:could not fork client check: %s"), strerror(errno));
+	error(_("INTERNAL ERROR:could not fork client check: %s"), strerror(errno));
 	/*NOTREACHED*/
 
     case 0:
-    	break;
+	break;
 
     default:
 	return pid;
@@ -2075,10 +2160,14 @@ start_client_checks(
     g_fprintf(outf, _("\nAmanda Backup Client Hosts Check\n"));
     g_fprintf(outf,   "--------------------------------\n");
 
+    hostcount = remote_errors = 0;
+
+    if (!who_check_host_setting) {
+	remote_errors = check_host_setting(outf);
+    }
+
     run_server_global_scripts(EXECUTE_ON_PRE_AMCHECK, get_config_name());
     protocol_init();
-
-    hostcount = remote_errors = 0;
 
     for(dp = origq.head; dp != NULL; dp = dp->next) {
 	hostp = dp->host;
@@ -2098,7 +2187,7 @@ start_client_checks(
     protocol_run();
     run_server_global_scripts(EXECUTE_ON_POST_AMCHECK, get_config_name());
 
-    g_fprintf(outf, plural(_("Client check: %d host checked in %s seconds."), 
+    g_fprintf(outf, plural(_("Client check: %d host checked in %s seconds."),
 			 _("Client check: %d hosts checked in %s seconds."),
 			 hostcount),
 	    hostcount, walltime_str(curclock()));
@@ -2240,4 +2329,36 @@ handle_result(
     /* try to clean up any defunct processes, since Amanda doesn't wait() for
        them explicitly */
     while(waitpid(-1, NULL, WNOHANG)> 0);
+}
+
+static int
+check_host_setting(
+    FILE *outf)
+{
+    am_host_t *p;
+    disk_t *dp;
+    int count = 0;
+
+    for (p = get_hostlist(); p != NULL; p = p->next) {
+	for(dp = p->disks; dp != NULL; dp = dp->hostnext) {
+	    if (strcmp(dp->auth, p->disks->auth) != 0) {
+		g_fprintf(outf, "ERROR: Multiple DLE's for host '%s' use different auth methods\n",
+			  p->hostname);
+		g_fprintf(outf, "       Please ensure that all DLE's for the host use the same auth method, including skipped ones\n");
+		count++;
+		break;
+	    }
+	}
+
+	for(dp = p->disks; dp != NULL; dp = dp->hostnext) {
+	    if (dp->maxdumps != p->disks->maxdumps) {
+		g_fprintf(outf, "ERROR: Multiple DLE's for host '%s' use different maxdumps values\n",
+			  p->hostname);
+		g_fprintf(outf, "       Please ensure that all DLE's for the host use the same maxdumps value, including skipped ones\n");
+		count++;
+		break;
+	    }
+	}
+    }
+    return count;
 }

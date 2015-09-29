@@ -1,10 +1,11 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
- * Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -64,7 +65,7 @@ typedef struct Slab {
     gsize size;
 
     /* base of the slab_size buffer */
-    gpointer base;
+    gchar *base;
 } Slab;
 
 /*
@@ -270,7 +271,7 @@ _xdt_dbg(const char *fmt, ...)
     arglist_start(argp, fmt);
     g_vsnprintf(msg, sizeof(msg), fmt, argp);
     arglist_end(argp);
-    g_debug("XDT: %s", msg);
+    g_debug("XDTC: %s", msg);
 }
 
 /*
@@ -839,7 +840,7 @@ write_slab_to_device(
     Slab *slab)
 {
     XferElement *elt = XFER_ELEMENT(self);
-    gpointer buf = slab->base;
+    gchar *buf = slab->base;
     gsize remaining = slab->size;
 
     while (remaining && !elt->cancelled) {
@@ -856,6 +857,7 @@ write_slab_to_device(
 	    return FALSE;
 	}
 
+	crc32_add((uint8_t *)buf, write_size, &elt->crc);
 	buf += write_size;
 	self->slab_bytes_written += write_size;
 	remaining -= write_size;
@@ -1058,6 +1060,8 @@ device_thread(
     /* tell the main thread we're done */
     xfer_queue_message(XFER_ELEMENT(self)->xfer, xmsg_new(XFER_ELEMENT(self), XMSG_DONE, 0));
 
+    g_debug("xfer-dest-taper-cacher CRC %08x:%lld",
+	    crc32_finish(&elt->crc), (long long)elt->crc.size);
     return NULL;
 }
 
@@ -1115,7 +1119,7 @@ push_buffer_impl(
     size_t size)
 {
     XferDestTaperCacher *self = (XferDestTaperCacher *)elt;
-    gpointer p;
+    char *p;
 
     DBG(3, "push_buffer(%p, %ju)", buf, (uintmax_t)size);
 
@@ -1328,7 +1332,12 @@ get_part_bytes_written_impl(
     /* NOTE: this access is unsafe and may return inconsistent results (e.g, a
      * partial write to the 64-bit value on a 32-bit system).  This is ok for
      * the moment, as it's only informational, but be warned. */
-    return self->bytes_written + self->slab_bytes_written;
+    if (self->device) {
+	return device_get_bytes_written(self->device);
+    } else {
+	return self->bytes_written + self->slab_bytes_written;
+    }
+
 }
 
 static void
@@ -1349,6 +1358,7 @@ instance_init(
     self->part_stop_serial = 0;
     self->disk_cache_read_fd = -1;
     self->disk_cache_write_fd = -1;
+    crc32_init(&elt->crc);
 }
 
 static void

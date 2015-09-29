@@ -1,8 +1,9 @@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -132,7 +133,7 @@ necesary checks.  To be clear, this string usually has the form C<"USER root">.
 The method returns C<undef> if the check succeeds, and an error message if it
 fails.
 
-    if ($self->check_bsd_security($stream, $authstr)) { .. }
+    if ($self->check_bsd_security($stream, $authstr, $service)) { .. }
 
 Not that the security check is skipped if the service is being run from an
 installcheck, since BSD security can't be tested by installchecks.
@@ -408,7 +409,7 @@ sub close {
 
 sub check_bsd_security {
     my $self = shift;
-    my ($name, $authstr) = @_;
+    my ($name, $authstr, $service) = @_;
 
     # find the open file descriptor
     my $fd = $self->rfd($name);
@@ -419,7 +420,7 @@ sub check_bsd_security {
     # installchecks are incompatible with BSD security
     return undef if $self->from_installcheck();
 
-    return Amanda::Util::check_security($fd, $authstr);
+    return Amanda::Util::check_security($fd, $authstr, $service);
 }
 
 sub parse_req {

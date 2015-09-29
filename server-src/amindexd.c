@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -248,7 +249,7 @@ uncompress_file(
 
 	indexfd = open(filename,O_WRONLY|O_CREAT, 0600);
 	if (indexfd == -1) {
-	    msg = vstrallocf(_("Can't open '%s' for writting: %s"),
+	    msg = vstrallocf(_("Can't open '%s' for writing: %s"),
 			      filename, strerror(errno));
 	    dbprintf("%s\n", msg);
 	    g_ptr_array_add(*emsg, msg);
@@ -282,9 +283,16 @@ uncompress_file(
 
 	/* start the sort process */
 	putenv(stralloc("LC_ALL=C"));
-	pid_sort = pipespawn(SORT_PATH, STDIN_PIPE|STDERR_PIPE, 0,
-			     &pipe_to_sort, &indexfd, &sort_errfd,
-			     SORT_PATH, NULL);
+	if (getconf_seen(CNF_TMPDIR)) {
+	    gchar *tmpdir = getconf_str(CNF_TMPDIR);
+	    pid_sort = pipespawn(SORT_PATH, STDIN_PIPE|STDERR_PIPE, 0,
+				 &pipe_to_sort, &indexfd, &sort_errfd,
+				 SORT_PATH, "-T", tmpdir, NULL);
+	} else {
+	    pid_sort = pipespawn(SORT_PATH, STDIN_PIPE|STDERR_PIPE, 0,
+				 &pipe_to_sort, &indexfd, &sort_errfd,
+				 SORT_PATH, NULL);
+	}
 	aclose(indexfd);
 
 	/* start a subprocess */
@@ -1549,7 +1557,7 @@ main(
 	    user_validated = amindexd_debug ||
 				check_security(
 					(sockaddr_union *)&his_addr,
-					arg, 0, &errstr);
+					arg, 0, &errstr, "amindexd");
 	    if(user_validated) {
 		reply(200, _("Access OK"));
 		amfree(line);

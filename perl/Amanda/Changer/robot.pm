@@ -1,8 +1,9 @@
-# Copyright (c) 2009,2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This library is free software; you can redistribute it and/or modify it
-# under the terms of the GNU Lesser General Public License version 2.1 as
-# published by the Free Software Foundation.
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+#* License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
 #
 # This library is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -27,6 +28,7 @@ use vars qw( @ISA );
 use Data::Dumper;
 use File::Path;
 use Amanda::Paths;
+use Amanda::Config qw( :init );
 use Amanda::MainLoop qw( :GIOCondition make_cb define_steps step );
 use Amanda::Config qw( :getconf );
 use Amanda::Debug qw( debug warning );
@@ -59,7 +61,7 @@ See the amanda-changers(7) manpage for usage information.
 #   drives - see below
 #   drive_lru - recently used drives, least recent first
 #   bc2lb - hash mapping known barcodes to known labels
-#   current_slot - the current slot
+#   current_slot - hash of the current slot
 #   last_operation_time - time the last operation finished
 #   last_operation_delay - required delay for that operation
 #   last_status - last time a 'status' command finished
@@ -83,7 +85,10 @@ See the amanda-changers(7) manpage for usage information.
 #   label - volume label
 #   barcode - volume barcode
 #   orig_slot - slot from which this tape was loaded
-
+#
+## The 'current_slot' key is also a hash by config name, the values of
+# which are the current slot for the config.
+# #
 # LOCKING
 #
 # This package uses Amanda::Changer's with_locked_state to lock a statefile and
@@ -130,6 +135,7 @@ sub new {
 
         # set below from properties
         statefile => undef,
+	'lock-timeout' => undef,
         drive2device => {}, # { drive => device name }
 	driveorder => [], # order of tape-device properties
 	drive_choice => 'lru',
@@ -140,6 +146,7 @@ sub new {
 	load_poll => [0, 2, 120], # delay, poll, until
 	eject_delay => 0, # in seconds
 	unload_delay => 0, # in seconds
+	broken_drive_loaded_slot => 0,
 	class_name => $class_name,
     };
     bless ($self, $class);
@@ -161,7 +168,7 @@ sub new {
         $self->{'statefile'} = "$localstatedir/amanda/$safe_filename";
     }
     $self->_debug("using statefile '$self->{statefile}'");
-
+    $self->{'lock-timeout'} = $config->{'lock-timeout'};
     # figure out the drive number to device name mapping
     if (exists $config->{'tapedev'}
 	    and $config->{'tapedev'} ne ''
@@ -229,6 +236,15 @@ sub new {
 	}
 	$self->{'drive_choice'} = $pval;
     }
+
+    # broken-drive-loaded-slot
+    my $broken_drive_loaded_slot = $self->{'config'}->get_boolean_property(
+					    "broken-drive-loaded-slot", 0);
+    if (!defined $broken_drive_loaded_slot) {
+	return Amanda::Changer->make_error("fatal", undef,
+	    message => "invalid 'broken-drive-loaded-slot' value");
+    }
+    $self->{'broken_drive_loaded_slot'} = $broken_drive_loaded_slot;
 
     # load-poll
     {
@@ -313,6 +329,27 @@ sub load {
     $self->_with_updated_state(\%params, 'res_cb', sub { $self->load_unlocked(@_) });
 }
 
+sub set_error_to_unknown {
+    my $self  = shift;
+    my %params = @_;
+    my $state;
+    $self->with_locked_state($self->{'state_filename'},
+			     $params{'set_to_unknown_cb'}, sub {
+	my ($state, $set_to_unknown_cb) = @_;
+	for my $slot (keys %{ $state->{'slots'} }) {
+	    if (defined $state->{slots}->{$slot}->{'device_error'} and
+		$state->{slots}->{$slot}->{'device_error'} eq
+		$params{'error_message'}) {
+		$state->{slots}->{$slot}->{'device_status'} = undef;
+		$state->{slots}->{$slot}->{'device_error'} = undef;
+		$state->{slots}->{$slot}->{'label'} = undef;
+		$state->{slots}->{$slot}->{'f_type'} = undef;
+	    }
+	}
+	$set_to_unknown_cb->();
+    });
+}
+
 sub load_unlocked {
     my $self = shift;
     my %params = @_;
@@ -337,24 +374,32 @@ sub load_unlocked {
         if (exists $params{'relative_slot'}) {
             if ($params{'relative_slot'} eq "next") {
 		if (exists $params{'slot'}) {
-		    $slot = $self->_get_next_slot($state, $params{'slot'});
-		    $self->_debug("loading next relative to $params{slot}: $slot");
+		    $slot = $self->_get_next_slot($state, $params{'slot'}, $params{'except_slots'});
+		    if (defined $slot) {
+			$self->_debug("loading next relative to $params{slot}: $slot");
+		    } else {
+			$self->_debug("no next slot relative to $params{slot}");
+		    }
 		} else {
-		    $slot = $self->_get_next_slot($state, $state->{'current_slot'});
-		    $self->_debug("loading next relative to current slot: $slot");
+		    $slot = $self->_get_next_slot($state, $state->{'current_slot'}{get_config_name()}, $params{'except_slots'});
+		    if (defined $slot) {
+			$self->_debug("loading next relative to current slot: $slot");
+		    } else {
+			$self->_debug("no next relative to current slot");
+		    }
 		}
-		if ($slot == -1) {
+		if (defined $slot && $slot == -1) {
 		    return $self->make_error("failed", $params{'res_cb'},
 			    reason => "invalid",
 			    message => "could not find next slot");
 		}
             } elsif ($params{'relative_slot'} eq "current") {
-                $slot = $state->{'current_slot'};
-		if ($slot == -1) {
+                $slot = $state->{'current_slot'}{get_config_name()};
+		if (defined $slot && $slot == -1) {
 		    # seek to the first slot
-		    $slot = $self->_get_next_slot($state, $state->{'current_slot'});
+		    $slot = $self->_get_next_slot($state, $state->{'current_slot'}{get_config_name()}, $params{'except_slots'});
 		}
-		if ($slot == -1) {
+		if (defined $slot && $slot == -1) {
 		    return $self->make_error("failed", $params{'res_cb'},
 			    reason => "invalid",
 			    message => "no current slot");
@@ -396,28 +441,69 @@ sub load_unlocked {
                     message => "no 'slot' or 'label' specified to load()");
         }
 
+        if (defined $slot and !exists $state->{'slots'}->{$slot}) {
+            return $self->make_error("failed", $params{'res_cb'},
+                    reason => "invalid",
+		    slot   => $slot,
+                    message => "invalid slot '$slot'");
+        }
+
+	if (!defined $slot) {
+	    my $all_empty = 1;
+	    if (exists $params{'except_slots'}) {
+		for my $xslot (keys %{ $params{'except_slots'} }) {
+		    if ($state->{'slots'}->{$xslot}->{'state'} ne Amanda::Changer::SLOT_EMPTY) {
+			$all_empty = 0;
+		    }
+		}
+		if ($all_empty) {
+		    return $self->make_error("failed", $params{'res_cb'},
+		        reason => "notfound",
+		        message => "all slots are empty");
+	        }
+	    }
+	    return $self->make_error("failed", $params{'res_cb'},
+		    reason => "notfound",
+		    message => "all slots have been loaded");
+	}
 	if (!$self->_is_slot_allowed($slot)) {
 	    if (exists $params{'label'}) {
 		return $self->make_error("failed", $params{'res_cb'},
 			reason => "invalid",
+			slot   => $slot,
 			message => "label '$params{label}' is in slot $slot, which is " .
 				   "not in use-slots ($self->{use_slots})");
 	    } else {
 		return $self->make_error("failed", $params{'res_cb'},
 			reason => "invalid",
+			slot   => $slot,
 			message => "slot $slot not in use-slots ($self->{use_slots})");
 	    }
 	}
 
 	if (exists $params{'except_slots'} and exists $params{'except_slots'}->{$slot}) {
-	    return $self->make_error("failed", $params{'res_cb'},
-		reason => "notfound",
-		message => "all slots have been loaded");
+	    # if all slots in except_slots are EMPTY
+	    my $all_empty = 1;
+	    for my $xslot (keys %{ $params{'except_slots'} }) {
+		if ($state->{'slots'}->{$xslot}->{'state'} ne Amanda::Changer::SLOT_EMPTY) {
+		    $all_empty = 0;
+		}
+	    }
+	    if ($all_empty) {
+	        return $self->make_error("failed", $params{'res_cb'},
+		    reason => "notfound",
+		    message => "all slots are empty");
+	    } else {
+	        return $self->make_error("failed", $params{'res_cb'},
+		    reason => "notfound",
+		    message => "all slots have been loaded");
+	    }
 	}
 
 	if ($state->{'slots'}->{$slot}->{'state'} eq Amanda::Changer::SLOT_EMPTY) {
 	    return $self->make_error("failed", $params{'res_cb'},
 		    reason => "empty",
+		    slot   => $slot,
 		    message => "slot $slot is empty");
 	}
 
@@ -449,6 +535,7 @@ sub load_unlocked {
 			# not 'volinuse' because we can't expect the tape to be magically
 			# unloaded any time soon -- it's not actually in use, just inaccessible
 			reason => "invalid",
+			slot => $slot,
 			message => "the requested volume is in drive $drive, which this " .
 				   "changer instance cannot access");
 	    }
@@ -471,7 +558,7 @@ sub load_unlocked {
 	    @check_order = (@{$self->{'driveorder'}});
 	} else {
 	    # the constructor should detect this circumstance
-	    die "invalid drive_choice";
+	    confess "invalid drive_choice";
 	}
 
 	my %checked;
@@ -587,7 +674,7 @@ sub load_unlocked {
 
     step check_device => sub {
 	my $device_name = $self->{'drive2device'}->{$drive};
-	die "drive $drive not found in drive2device" unless $device_name; # shouldn't happen
+	confess "drive $drive not found in drive2device" unless $device_name; # shouldn't happen
 
 	$self->_debug("polling '$device_name' to see if it's ready");
 
@@ -636,15 +723,25 @@ sub load_unlocked {
 	    # update metadata with this new information
 	    $state->{'slots'}->{$slot}->{'state'} = Amanda::Changer::SLOT_FULL;
 	    $state->{'slots'}->{$slot}->{'device_status'} = $device->status;
-	    $state->{'slots'}->{$slot}->{'device_error'} = $device->error;
-	    if (defined $device->{'volume_header'}) {
-		$state->{'slots'}->{$slot}->{'f_type'} = $device->{'volume_header'}->{type};
+	    if ($device->status == $DEVICE_STATUS_SUCCESS) {
+	        $state->{'slots'}->{$slot}->{'device_error'} = undef;
+	    } else {
+	        $state->{'slots'}->{$slot}->{'device_error'} = $device->error;
+	    }
+	    if (defined $device->volume_header) {
+		$state->{'slots'}->{$slot}->{'f_type'} = $device->volume_header->{type};
 	    } else {
 		$state->{'slots'}->{$slot}->{'f_type'} = undef;
 	    }
 	    $state->{'slots'}->{$slot}->{'label'} = $label;
 	    if ($state->{'slots'}->{$slot}->{'barcode'}) {
-		$state->{'bc2lb'}->{$state->{'slots'}->{$slot}->{'barcode'}} = $label;
+		my $barcode = $state->{'slots'}->{$slot}->{'barcode'};
+		my $old_label = $state->{'bc2lb'}->{$barcode};
+		if ($label ne $old_label) {
+		    $self->_debug("make_res: slot $slot");
+		    $self->_debug("update label '$label' for barcode '$barcode', old label was '$old_label'");
+		}
+		$state->{'bc2lb'}->{$barcode} = $label;
 	    }
 
 	    return $self->make_error("failed", $params{'res_cb'},
@@ -653,15 +750,17 @@ sub load_unlocked {
 			       "for '$params{label}'");
 	}
 
-	if (!$label and $params{'label'}) {
-	    $self->_debug("Expected label '$params{label}', but got an unlabeled tape");
-
+	if (!$label) {
 	    # update metadata with this new information
 	    $state->{'slots'}->{$slot}->{'state'} = Amanda::Changer::SLOT_FULL;
 	    $state->{'slots'}->{$slot}->{'device_status'} = $device->status;
-	    $state->{'slots'}->{$slot}->{'device_error'} = $device->error;
-	    if (defined $device->{'volume_header'}) {
-		$state->{'slots'}->{$slot}->{'f_type'} = $device->{'volume_header'}->{type};
+	    if ($device->status == $DEVICE_STATUS_SUCCESS) {
+		$state->{'slots'}->{$slot}->{'device_error'} = undef;
+	    } else {
+		$state->{'slots'}->{$slot}->{'device_error'} = $device->error;
+	    }
+	    if (defined $device->volume_header) {
+		$state->{'slots'}->{$slot}->{'f_type'} = $device->volume_header->{type};
 	    } else {
 		$state->{'slots'}->{$slot}->{'f_type'} = undef;
 	    }
@@ -670,11 +769,24 @@ sub load_unlocked {
 		delete $state->{'bc2lb'}->{$state->{'slots'}->{$slot}->{'barcode'}};
 	    }
 
-	    return $self->make_error("failed", $params{'res_cb'},
+	    if (defined $params{'label'}) {
+		$self->_debug("Expected label '$params{label}', but got an unlabeled tape");
+		return $self->make_error("failed", $params{'res_cb'},
 		    reason => "notfound",
 		    message => "Found unlabeled tape while looking for '$params{label}'");
+	    }
 	}
 
+	if (defined $self->{'tapelist'}) {
+	    my $tle = $self->{'tapelist'}->lookup_tapelabel($label);
+	    if (defined $tle and defined $tle->{'barcode'} and
+		defined $state->{'slots'}->{$slot}->{'barcode'} and
+		$state->{'slots'}->{$slot}->{'barcode'} ne $tle->{'barcode'}) {
+		return $self->make_error("failed", $params{'res_cb'},
+		    reason => "device",
+		    message => "Slot $slot, label '$label', mismatch barcode between changer '$state->{'slots'}->{$slot}->{'barcode'}' and tapelist file '$tle->{'barcode'}'");
+	    }
+	}
         my $res = Amanda::Changer::robot::Reservation->new($self, $slot, $drive,
                                 $device, $state->{'slots'}->{$slot}->{'barcode'});
 
@@ -689,12 +801,28 @@ sub load_unlocked {
 	$state->{'drives'}->{$drive}->{'state'} = Amanda::Changer::SLOT_FULL;
 	$state->{'drives'}->{$drive}->{'barcode'} = $state->{'slots'}->{$slot}->{'barcode'};
 	$state->{'slots'}->{$slot}->{'device_status'} = $device->status;
-	if ($label and $state->{'slots'}->{$slot}->{'barcode'}) {
-	    $state->{'bc2lb'}->{$state->{'slots'}->{$slot}->{'barcode'}} = $label;
+	if ($device->status == $DEVICE_STATUS_SUCCESS) {
+	    $state->{'slots'}->{$slot}->{'device_error'} = undef;
+	} else {
+	    $state->{'slots'}->{$slot}->{'device_error'} = $device->error;
+	}
+	if (defined $device->volume_header) {
+	    $state->{'slots'}->{$slot}->{'f_type'} = $device->volume_header->{type};
+	} else {
+	    $state->{'slots'}->{$slot}->{'f_type'} = undef;
+	}
+	my $barcode = $state->{'slots'}->{$slot}->{'barcode'};
+	if ($label and $barcode) {
+	    my $old_label = $state->{'bc2lb'}->{$barcode};
+	    if (defined $old_label and $old_label ne $label) {
+		$self->_debug("load drive $drive slot $slot");
+		$self->_debug("update label '$label' for barcode '$barcode', old label was '$old_label'");
+	    }
+	    $state->{'bc2lb'}->{$barcode} = $label;
 	}
 	if ($params{'set_current'}) {
-		$self->_debug("setting current slot to $slot");
-	    $state->{'current_slot'} = $slot;
+	    $self->_debug("setting current slot to $slot");
+	    $state->{'current_slot'}{get_config_name()} = $slot;
 	}
 
         return $params{'res_cb'}->(undef, $res);
@@ -792,13 +920,13 @@ sub get_device { # (overridden by subclasses)
     my $device = Amanda::Device->new($device_name);
     if ($device->status != $DEVICE_STATUS_SUCCESS) {
 	return Amanda::Changer->make_error("fatal", undef,
-		reason => "unknown",
+		reason => "device",
 		message => "opening '$device_name': " . $device->error_or_status());
     }
 
     if (my $err = $self->{'config'}->configure_device($device)) {
 	return Amanda::Changer->make_error("fatal", undef,
-		reason => "unknown",
+		reason => "device",
 		message => $err);
     }
 
@@ -845,6 +973,11 @@ sub _set_label_unlocked {
 	$state->{'slots'}->{$slot}->{'label'} = $label;
     }
     if (defined $barcode) {
+	if (defined $state->{'bc2lb'}->{$barcode} and
+	    $state->{'bc2lb'}->{$barcode} ne $label) {
+	    my $old_label = $state->{'bc2lb'}->{$barcode};
+	    $self->_debug("update barcode '$barcode' to label '$label', old label was '$old_label'");
+	}
 	$state->{'bc2lb'}->{$barcode} = $label;
     }
 
@@ -903,7 +1036,7 @@ sub reset_unlocked {
     my %params = @_;
     my $state = $params{'state'};
 
-    $state->{'current_slot'} = $self->_get_next_slot($state, -1);
+    $state->{'current_slot'}{get_config_name()} = $self->_get_next_slot($state, -1);
 
     $params{'finished_cb'}->();
 }
@@ -968,6 +1101,12 @@ sub eject_unlocked {
 	    return $self->make_error("failed", $params{'finished_cb'},
 		    reason => "volinuse",
 		    message => "tape in drive '$drive' is in use");
+	}
+
+	if (!defined $drive_info->{'orig_slot'}) {
+	    return $self->make_error("failed", $params{'finished_cb'},
+			reason => "invalid",
+			message => "drive '$drive' is empty");
 	}
 
 	if ($self->{'eject_before_unload'}) {
@@ -1128,10 +1267,19 @@ sub update_unlocked {
 	    # parse the string just like use-slots, using a hash for uniqueness
 	    my %changed;
 	    for my $range (split ',', $params{'changed'}) {
-		my ($first, $last) = ($range =~ /(\d+)(?:-(\d+))?/);
-		$last = $first unless defined($last);
-		for ($first .. $last) {
-		    $changed{$_} = undef;
+		if ($range eq 'error') {
+		    while (my ($sl, $inf) = each %{$state->{'slots'}}) {
+			if (defined $inf->{'device_status'} &&
+			    $inf->{'device_status'} != $DEVICE_STATUS_SUCCESS) {
+			    $changed{$sl} = undef;
+			}
+		    }
+		} else {
+		   my ($first, $last) = ($range =~ /(\d+)(?:-(\d+))?/);
+		   $last = $first unless defined($last);
+		   for ($first .. $last) {
+			$changed{$_} = undef;
+		    }
 		}
 	    }
 
@@ -1155,17 +1303,15 @@ sub update_unlocked {
 
 	my $slot = shift @slots_to_check;
 	$user_msg_fn->("Removing entry for slot $slot");
-	if (!defined $state->{'slots'}->{$slot}->{'barcode'}) {
-	    $state->{'slots'}->{$slot}->{'label'} = undef;
-	    $state->{'slots'}->{$slot}->{'device_status'} = undef;
-	    $state->{'slots'}->{$slot}->{'device_error'} = undef;
-	    $state->{'slots'}->{$slot}->{'f_type'} = undef;
-	    if (defined $state->{'slots'}->{$slot}->{'loaded_in'}) {
-		my $drive = $state->{'slots'}->{$slot}->{'loaded_in'};
-		$state->{'drives'}->{$drive}->{'label'} = undef;
-		$state->{'drives'}->{$drive}->{'state'} =
+	$state->{'slots'}->{$slot}->{'label'} = undef;
+	$state->{'slots'}->{$slot}->{'device_status'} = undef;
+	$state->{'slots'}->{$slot}->{'device_error'} = undef;
+	$state->{'slots'}->{$slot}->{'f_type'} = undef;
+	if (defined $state->{'slots'}->{$slot}->{'loaded_in'}) {
+	    my $drive = $state->{'slots'}->{$slot}->{'loaded_in'};
+	    $state->{'drives'}->{$drive}->{'label'} = undef;
+	    $state->{'drives'}->{$drive}->{'state'} =
 					Amanda::Changer::SLOT_FULL;
-	    }
 	}
 	$steps->{'set_to_unknown'}->();
     };
@@ -1253,7 +1399,7 @@ sub inventory_unlocked {
 	    if $slot->{'ie'};
 
 	$i->{'current'} = 1
-	    if $slot_name eq $state->{'current_slot'};
+	    if $slot_name eq $state->{'current_slot'}{get_config_name()};
 
 	push @inv, $i;
     }
@@ -1363,6 +1509,253 @@ sub move_unlocked {
     }
 }
 
+sub verify {
+    my $self = shift;
+    my %params = @_;
+
+    return if $self->check_error($params{'finished_cb'});
+
+    $self->_with_updated_state(\%params, 'finished_cb',
+	sub { $self->verify_unlocked(@_); });
+}
+
+sub verify_unlocked {
+    my $self = shift;
+    my %params = @_;
+    my $state = $params{'state'};
+    my @drives;
+    my @devices;
+    my $slot;
+    my $drive;
+    my @results;
+    my @tape_devices;
+
+    my $steps = define_steps
+	cb_ref => \$params{'finished_cb'};
+
+    step unload_all => sub {
+	# get a drive to eject
+	for my $drive (keys %{$state->{'drives'}}) {
+	    if ($state->{'drives'}->{$drive}->{'state'} == Amanda::Changer::SLOT_FULL) {
+		return $self->eject_unlocked(drive => $drive,
+			      state => $state,
+			      finished_cb => $steps->{'unload_all_unloaded'});
+	    }
+	}
+
+	# get a new state
+	$params{'finished_get_state_cb'} = $steps->{'verify_all_unloaded'};
+	return $self->_get_state(\%params);
+    };
+
+    step unload_all_unloaded => sub {
+	my ($err) = @_;
+
+	if ($err) {
+	    return $params{'finished_cb'}->($err);
+	}
+	return $steps->{'unload_all'}->();
+    };
+
+    step verify_all_unloaded => sub {
+	my ($newstate) = @_;
+
+	if (UNIVERSAL::isa($newstate, 'Amanda::Changer::Error')) {
+	    return $params{'finished_cb'}->($newstate);
+	}
+	$state = $newstate;
+
+	my @loaded_drive;
+
+	# verify all drives are unloaded
+	for my $drive (keys %{$state->{'drives'}}) {
+	    push @drives, $drive;
+	    if ($state->{'drives'}->{$drive}->{'state'} == Amanda::Changer::SLOT_FULL) {
+		push @loaded_drive, $drive;
+	    }
+	    if ($self->{'drive2device'}->{$drive}) {
+		push @devices, $self->{'drive2device'}->{$drive};
+	    }
+	}
+	if (@loaded_drive) {
+	    return $self->make_error("failed", $params{'finished_cb'},
+			reason => "invalid",
+			message => "Can't unload all drives: " .
+				   join(" ", @loaded_drive));
+	}
+	$steps->{'eject_devices'}->();
+    };
+
+    step eject_devices => sub {
+	return $steps->{'verify_a_drive'}->() if !@devices;
+
+	my $device_name = pop @devices;
+	my $device = $self->get_device($device_name);
+	if ($device->isa("Amanda::Changer::Error")) {
+	    push @results, "$device";
+	    return $steps->{'eject_devices'}->();
+	}
+	$device->eject();
+	return $steps->{'eject_devices'}->();
+    };
+
+    step verify_a_drive => sub {
+	return $steps->{'all_done'}->() if !@drives;
+
+	$drive = pop @drives;
+	if (!defined $self->{'drive2device'}->{$drive}) {
+	    return $steps->{'verify_a_drive'}->();
+	}
+
+	# find a full slot in the allowed range
+	$slot = $self->_get_next_slot($state, -1);
+
+	$self->{'interface'}->load($slot, $drive, $steps->{'load_finished'});
+    };
+
+    step load_finished => sub {
+	my ($err) = @_;
+	if ($err) {
+	    push @results, "$err";
+	    return $steps->{'verify_a_drive'}->();
+	}
+	$steps->{'start_polling'}->();
+    };
+
+    my ($next_poll, $last_poll);
+    step start_polling => sub {
+	my ($delay, $poll, $until) = @{ $self->{'load_poll'} };
+	my $now = time;
+	$next_poll = $now + $delay;
+	$last_poll = $now + $until;
+
+	return Amanda::MainLoop::call_after(1000 * ($next_poll - $now), $steps->{'check_device'});
+    };
+
+    step check_device => sub {
+	my $device_name = $self->{'drive2device'}->{$drive};
+	confess "drive $drive not found in drive2device" unless $device_name; # shouldn't happen
+
+	my ($delay, $poll, $until) = @{ $self->{'load_poll'} };
+	$self->_debug("polling '$device_name' to see if it's ready");
+
+	my $device = $self->get_device($device_name);
+	if ($device->isa("Amanda::Changer::Error")) {
+	    push @results, "$device";
+	    return $steps->{'unload'}->();
+	}
+
+	$device->read_label();
+
+	my $device_name2;
+	my $hint = 0;
+	# see if the device thinks it's possible it's busy or empty
+	if ($device->status & $DEVICE_STATUS_VOLUME_MISSING
+	    or $device->status & $DEVICE_STATUS_DEVICE_BUSY) {
+
+	    # check if any other device is loaded, to abort the poll sooner
+	    for my $ddrive (keys %{$state->{'drives'}}) {
+		#next if $ddrive == $drive;
+		if (defined $self->{'drive2device'}->{$ddrive}) {
+		    $device_name2 = $self->{'drive2device'}->{$ddrive};
+		    my $device2 = $self->get_device($device_name2);
+		    next if $device2->isa("Amanda::Changer::Error");
+
+		    $device2->read_label();
+
+		    if (!($device2->status & $DEVICE_STATUS_VOLUME_MISSING) &&
+			!($device2->status & $DEVICE_STATUS_DEVICE_ERROR)) {
+			$hint = 1;
+			$last_poll -= $until;
+			last;
+		    }
+		}
+	    }
+
+	    # device is not ready -- set up for the next polling step
+	    my $now = time;
+	    $next_poll += $poll;
+	    $next_poll = $now + 1 if ($next_poll < $now);
+	    if ($poll != 0 and $next_poll < $last_poll) {
+		return Amanda::MainLoop::call_after(
+			1000 * ($next_poll - $now), $steps->{'check_device'});
+	    }
+
+	    # (fall through if we're done polling)
+	}
+
+	if ($device->status & $DEVICE_STATUS_VOLUME_MISSING) {
+	    debug("ERROR: Drive $drive is not device $device_name");
+	    push @results, "ERROR: Drive $drive is not device $device_name";
+	} elsif ($device->status == $DEVICE_STATUS_DEVICE_ERROR) {
+	    debug("ERROR: Drive $drive: " . $device->error());
+	    push @results, "ERROR: Drive $drive: " . $device->error();
+	} else {
+	    debug("GOOD : Drive $drive is device $device_name");
+	    push @results, "GOOD : Drive $drive is device $device_name";
+	    push @tape_devices, "$drive=$device_name";
+	}
+	if ($hint) {
+	    debug("HINT : Drive $drive looks to be device $device_name2");
+	    push @results, "HINT : Drive $drive looks to be device $device_name2";
+	    push @tape_devices, "$drive=$device_name2";
+	}
+
+	return $steps->{'unload'}->();
+    };
+
+    step unload => sub {
+	$state->{'last_status'} = 0;
+	$state->{'last_operation_time'} = 0;
+	$params{'finished_get_state_cb'} = $steps->{'unload_new_state'};
+	return $self->_get_state(\%params);
+    };
+
+    step unload_new_state => sub {
+	my ($newstate) = @_;
+
+	if (UNIVERSAL::isa($newstate, 'Amanda::Changer::Error')) {
+	    return $params{'finished_cb'}->($newstate);
+	}
+	$state = $newstate;
+
+	return $self->eject_unlocked(drive => $drive,
+			      state => $state,
+			      finished_cb => $steps->{'unload_done'});
+    };
+
+    step unload_done => sub {
+	my ($err) = @_;
+
+	if ($err) {
+	    debug("ERROR: $err");
+	    push @results, "ERROR: $err";
+	}
+	return $steps->{'verify_a_drive'}->();
+    };
+
+    step all_done => sub {
+	my $tape_devices;
+
+	for my $drive (@{$self->{'driveorder'}}) {
+	    if (!exists $state->{'drives'}->{$drive}) {
+		debug("ERROR: Drive $drive: no such drive in changer");
+		push @results, "ERROR: Drive $drive: no such drive in changer";
+	    }
+	}
+
+	foreach my $tape_device (@tape_devices) {
+	    $tape_devices .= " \"$tape_device\"";
+	}
+	if (defined $tape_devices) {
+	    push @results, "property \"TAPE-DEVICE\"$tape_devices";
+	} else {
+	    push @results, "ERROR: Found no valid tape device";
+	}
+	$params{'finished_cb'}->(undef, @results);
+    };
+}
+
 ##
 # Utilities
 
@@ -1370,11 +1763,12 @@ sub move_unlocked {
 # the changer status has been updated)
 sub _get_next_slot {
     my $self = shift;
-    my ($state, $slot) = @_;
+    my ($state, $slot, $except_slots) = @_;
 
     my @nonempty = sort { $a <=> $b } grep {
 	$state->{'slots'}->{$_}->{'state'} == Amanda::Changer::SLOT_FULL
 	and $self->_is_slot_allowed($_)
+	and (!$except_slots || !$except_slots->{$_})
     } keys(%{$state->{'slots'}});
 
     my @higher = grep { $_ > $slot } @nonempty;
@@ -1401,7 +1795,6 @@ sub _is_slot_allowed {
     return 0;
 }
 
-# add a prefix and call Amanda::Debug::debug
 sub _debug {
     my $self = shift;
     my ($msg) = @_;
@@ -1470,22 +1863,58 @@ sub _with_updated_state {
 
     step start => sub {
 	$self->with_locked_state($self->{'statefile'},
-	    $params{$cbname}, $steps->{'got_lock'});
+		    $params{$cbname}, $steps->{'got_lock'});
     };
 
     step got_lock => sub {
 	($state, my $new_cb) = @_;
 
 	# set up params for calling through to $sub later
-	$params{'state'} = $state;
 	$params{$cbname} = $new_cb;
+	$paramsref->{$cbname} = $new_cb;
+	$paramsref->{'state'} = $state;
+	$paramsref->{'finished_get_state_cb'} = $steps->{'got_state'};
+	$self->_get_state($paramsref);
+    };
+
+    step got_state => sub {
+	my ($state) = @_;
+
+	if (UNIVERSAL::isa($state, 'Amanda::Changer::Error')) {
+	    return $paramsref->{$cbname}->($state);
+	}
+
+	$params{'state'} = $state;
+	# finally, call through to the user's method; $params{$cbname} has been
+	# properly patched to release the state lock when this method is done.
+	$sub->(%params);
+    }
+}
+
+sub _get_state {
+    my $self = shift;
+    my ($paramsref) = @_;
+    my %params = %$paramsref;
+
+    my $state = $params{'state'};
+
+    my $steps = define_steps
+        cb_ref => \$params{'finished_get_state_cb'};
+
+    step got_lock => sub {
 
 	if (!keys %$state) {
 	    $state->{'slots'} = {};
 	    $state->{'drives'} = {};
 	    $state->{'drive_lru'} = [];
 	    $state->{'bc2lb'} = {};
-	    $state->{'current_slot'} = -1;
+	    $state->{'current_slot'}{get_config_name()} = -1;
+	}
+
+	if (defined $state->{'current_slot'} &&
+	    ref(\$state->{'current_slot'}) eq "SCALAR") {
+	    my $current_slot = $state->{'current_slot'};
+	    $state->{'current_slot'} = {get_config_name() => $current_slot};
 	}
 
 	# this is for testing ONLY!
@@ -1494,7 +1923,8 @@ sub _with_updated_state {
 	# if it's not time for another run of the status command yet, then just skip to
 	# the end.
 	if (defined $state->{'last_status'}
-	    and time < $state->{'last_status'} + $self->{'status_interval'}) {
+	    and time < $state->{'last_status'} + $self->{'status_interval'}
+	    and  defined $self->{'got_status'}) {
 	    $self->_debug("too early for another 'status' invocation");
 	    $steps->{'done'}->();
 	} else {
@@ -1513,7 +1943,8 @@ sub _with_updated_state {
     step status_cb => sub {
 	my ($err, $status) = @_;
 	if ($err) {
-	    return $self->make_error("fatal", $params{$cbname},
+	    return $self->make_error("failed", $params{'finished_get_state_cb'},
+		reason => "invalid",
 		message => $err);
 	}
 
@@ -1547,7 +1978,25 @@ sub _with_updated_state {
 	    if (defined $info->{'barcode'}) {
 
                 my $label = $state->{'bc2lb'}->{$info->{'barcode'}};
+		my $tl_label;
+		if (defined $self->{'tapelist'}) {
+		    my $tle = $self->{'tapelist'}->lookup_by_barcode($info->{'barcode'});
+		    if (defined $tle) {
+			$tl_label = $tle->{'label'};
+		    }
+		}
 
+		if (defined $label and defined $tl_label and
+		    $label ne $tl_label) {
+		    debug("MISMATCH label for barcode  state ($label)   tapelist ($tl_label) for barcode $info->{'barcode'}");
+		}
+		if (!defined $label && defined $tl_label) {
+		    if (!defined $info->{'state'} ||
+			$info->{'state'} == Amanda::Changer::SLOT_UNKNOWN) {
+			$label = $tl_label;
+			$state->{'bc2lb'}->{$info->{'barcode'}} = $tl_label;
+		    }
+		}
 		$new_slots->{$slot} = {
                     state => Amanda::Changer::SLOT_FULL,
 		    device_status => $state->{'slots'}->{$slot}->{device_status},
@@ -1561,7 +2010,9 @@ sub _with_updated_state {
 	    } else {
 		# assume the status of this slot has not changed since the last
                 # time we looked at it, although mark it as not loaded in a slot
-		if (exists $state->{'slots'}->{$slot}) {
+		if (exists $state->{'slots'}->{$slot} and
+		    exists $state->{'slots'}->{$slot}->{'state'} and
+		    $state->{'slots'}->{$slot}->{'state'} == Amanda::Changer::SLOT_FULL) {
 		    $new_slots->{$slot} = $state->{'slots'}->{$slot};
 		    $new_slots->{$slot}->{'loaded_in'} = undef;
 		} else {
@@ -1604,47 +2055,99 @@ sub _with_updated_state {
 		next;
 	    }
 
-	    # trust our own orig_slot over that from the changer, if possible,
-	    # as some changers do not report this information accurately
+	if (defined $old_drive->{'orig_slot'} and
+	     defined $info->{'orig_slot'} and
+	    $old_drive->{'orig_slot'} ne $info->{'orig_slot'}) {
+		debug("WARNING: orig_slot from state file ($old_drive->{'orig_slot'}) differ from mtx output ($info->{'orig_slot'})");
+	    }
+
 	    my ($orig_slot, $label);
-	    if (defined $old_drive->{'orig_slot'}) {
-		$orig_slot = $old_drive->{'orig_slot'};
-                $label = $old_drive->{'label'};
-	    }
+	    if ($self->{'broken_drive_loaded_slot'}) {
+		# trust our own orig_slot over that from the changer, if possible,
+		# as some changers do not report this information accurately
+		if (defined $old_drive->{'orig_slot'}) {
+		    $orig_slot = $old_drive->{'orig_slot'};
+                    $label = $old_drive->{'label'};
+		}
 
-	    # but don't trust it if the barcode has changed
-	    if (defined $info->{'barcode'}
-		    and defined $old_drive->{'barcode'}
-		    and $info->{'barcode'} ne $old_drive->{'barcode'}) {
-		$orig_slot = undef;
-                $label = undef;
-	    }
+		# but don't trust it if the barcode has changed
+		if (defined $info->{'barcode'}
+		        and defined $old_drive->{'barcode'}
+		        and $info->{'barcode'} ne $old_drive->{'barcode'}) {
+		    $orig_slot = undef;
+                    $label = undef;
+		}
 
-	    # get the robot's notion of the original slot if we don't know ourselves
-	    if (!defined $orig_slot) {
+		# get the robot's notion of the original slot if we don't know ourselves
+		if (!defined $orig_slot) {
+		    $orig_slot = $info->{'orig_slot'};
+		}
+
+		# use robot slot if our slot is not empty and the changer slot is empty
+		if (defined $orig_slot and defined $info->{'orig_slot'} and $orig_slot ne $info->{'orig_slot'}
+		    and $state->{'slots'}->{$orig_slot}->{'state'} != Amanda::Changer::SLOT_EMPTY
+		    and $state->{'slots'}->{$info->{'orig_slot'}}->{'state'} == Amanda::Changer::SLOT_EMPTY) {
+		    $orig_slot = $info->{'orig_slot'};
+		}
+	    } else {
+		# use robot's slot
 		$orig_slot = $info->{'orig_slot'};
+                if (defined $orig_slot and
+                    defined $old_drive->{'orig_slot'} and
+                    $orig_slot eq $old_drive->{'orig_slot'}) {
+                    $label = $old_drive->{'label'};
+                }
 	    }
 
 	    # but if there's a tape in that slot, then we've got a problem
 	    if (defined $orig_slot
 		    and $state->{'slots'}->{$orig_slot}->{'state'} != Amanda::Changer::SLOT_EMPTY) {
-		warning("mtx indicates tape in drive $drv should go to slot $orig_slot, " .
+		warning("WARNING: mtx indicates tape in drive $drv should go to slot $orig_slot, " .
 		        "but that slot is not empty.");
 		$orig_slot = undef;
-		for my $slot (keys %{ $state->{'slots'} }) {
-		    if ($state->{'slots'}->{$slot}->{'state'} == Amanda::Changer::SLOT_EMPTY) {
-			$orig_slot = $slot;
-			last;
+		# assign an allowed slot
+		if (defined $info->{'orig_slot'} and $self->_is_slot_allowed($info->{'orig_slot'})) {
+		    for my $slot (keys %{ $state->{'slots'} }) {
+		        if ($state->{'slots'}->{$slot}->{'state'} == Amanda::Changer::SLOT_EMPTY and
+			    $self->_is_slot_allowed($slot)) {
+			    $orig_slot = $slot;
+			    last;
+			}
+		    }
+		}
+		# assign any empty slot
+		if (!defined $orig_slot) {
+		    for my $slot (keys %{ $state->{'slots'} }) {
+		        if ($state->{'slots'}->{$slot}->{'state'} == Amanda::Changer::SLOT_EMPTY) {
+			    $orig_slot = $slot;
+			    last;
+			}
 		    }
 		}
 		if (!defined $orig_slot) {
-		    warning("cannot find an empty slot for the tape in drive $drv");
+		    warning("WARNING: cannot find an empty slot for the tape in drive $drv");
 		}
 	    }
 
 	    # and look up the label by barcode if possible
 	    if (!defined $label && defined $info->{'barcode'}) {
 		$label = $state->{'bc2lb'}->{$info->{'barcode'}};
+		my $tl_label;
+		if (defined $self->{'tapelist'} and
+		    $state->{'slots'}->{$orig_slot}->{'state'} == Amanda::Changer::SLOT_UNKNOWN) {
+		    my $tle = $self->{'tapelist'}->lookup_by_barcode($info->{'barcode'});
+		    if (defined $tle) {
+			$tl_label = $tle->{'label'};
+		    }
+		}
+
+		if (defined $label and defined $tl_label) {
+		    debug("WARNING: MISMATCH drive label for barcode  state ($label)   tapelist ($tl_label) for barcode $info->{'barcode'}");
+		}
+		if (!defined $label && defined $tl_label) {
+		    $label = $tl_label;
+		    $state->{'bc2lb'}->{$info->{'barcode'}} = $tl_label;
+		}
 	    }
 
 	    $new_drives->{$drv} = {
@@ -1681,17 +2184,17 @@ sub _with_updated_state {
 	    }
 	}
 
-	if ($state->{'current_slot'} == -1) {
-	    $state->{'current_slot'} = $self->_get_next_slot($state, -1);
+	if (!defined $state->{'current_slot'}{get_config_name()} ||
+	    $state->{'current_slot'}{get_config_name()} == -1) {
+	    $state->{'current_slot'}{get_config_name()} = $self->_get_next_slot($state, -1);
 	}
 
 	$steps->{'done'}->();
     };
 
     step done => sub {
-	# finally, call through to the user's method; $params{$cbname} has been
-	# properly patched to release the state lock when this method is done.
-	$sub->(%params);
+	$self->{'got_status'} = 1;
+	$params{'finished_get_state_cb'}->($state);
     };
 }
 
@@ -1902,18 +2405,22 @@ sub status {
 	    my ($exitstatus, $output) = @_;
 	    if ($exitstatus != 0) {
 		my $err = $output;
+		for my $line (split '\n', $output) {
+		    debug("mtx: $line");
+		}
 		# if it's a regular SCSI error, just show the sense key
 		my ($sensekey) = ($err =~ /mtx: Request Sense: Sense Key=(.*)\n/);
 		$err = "SCSI error; Sense Key=$sensekey" if $sensekey;
 		$counter--;
-		if ($sensekey eq "Not Ready" and $counter > 0) {
-		    debug("$output");
+		if (($sensekey eq "Not Ready" and $counter > 0) ||
+		    ($sensekey eq "No Sense" and $counter > 0)) {
 		    return Amanda::MainLoop::call_after(1000, $run_mtx);
 		}
 		return $status_cb->("error from mtx: " . $err, {});
 	    } else {
 		my %status;
 		for my $line (split '\n', $output) {
+		    debug("mtx: $line");
 		    my ($slot, $ie, $slinfo);
 
 		    # drives (data transfer elements)
@@ -2025,12 +2532,12 @@ sub _run_system_command {
 
     my ($readfd, $writefd) = POSIX::pipe();
     if (!defined($writefd)) {
-	die("Error creating pipe: $!");
+	confess("Error creating pipe: $!");
     }
 
     my $pid = fork();
     if (!defined($pid) or $pid < 0) {
-        die("Can't fork to run changer script: $!");
+        confess("Can't fork to run changer script: $!");
     }
 
     if (!$pid) {

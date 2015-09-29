@@ -28,14 +28,42 @@
 <refsynopsisdiv>
 <cmdsynopsis>
   <command>amfetchdump</command>
-    <arg choice='opt'>-c|-C|-L</arg>
-    <arg choice='opt'>-p|-n</arg>
+    <group choice='opt'>
+      <arg choice='plain'>-c</arg>
+      <arg choice='plain'>-C</arg>
+      <arg choice='plain'>-l</arg>
+    </group>
+    <group choice='opt'>
+      <arg choice='plain'>-p</arg>
+      <arg choice='plain'>-n</arg>
+    </group>
     <arg choice='opt'>-a</arg>
     <arg choice='opt'>-O <replaceable>directory</replaceable></arg>
     <arg choice='opt'>-d <replaceable>device</replaceable></arg>
-    <arg choice='opt'>-h</arg>
-    <arg choice='opt'>--header-file <replaceable>filename</replaceable></arg>
-    <arg choice='opt'>--header-fd <replaceable>fd</replaceable></arg>
+    <group choice='opt'>
+      <arg choice='plain'>-h</arg>
+      <arg choice='plain'>--header-file <replaceable>filename</replaceable></arg>
+      <arg choice='plain'>--header-fd <replaceable>fd</replaceable></arg>
+    </group>
+    <group choice='opt'>
+      <arg choice='plain'>--decompress</arg>
+      <arg choice='plain'>--no-decompress</arg>
+      <arg choice='plain'>--server-decompress</arg>
+      <arg choice='plain'>--client-decompress</arg>
+    </group>
+    <arg>
+	<arg choice='plain'>--extract</arg>
+	<arg choice='plain'>--directory<replaceable> directory</replaceable></arg>
+	<arg choice='opt'>--data-path<replaceable> amanda|directtcp</replaceable></arg>
+	<arg choice='opt'>--application-property <replaceable>NAME=VALUE</replaceable></arg>*
+    </arg>
+    <group choice='opt'>
+      <arg choice='plain'>--decrypt</arg>
+      <arg choice='plain'>--no-decrypt</arg>
+      <arg choice='plain'>--server-decrypt</arg>
+      <arg choice='plain'>--client-decrypt</arg>
+    </group>
+    <arg choice='opt'>--exact_match</arg>
     &configoverride.synopsis;
     <arg choice='plain'><replaceable>config</replaceable></arg>
     <arg choice='plain'><replaceable>hostname</replaceable></arg>
@@ -60,7 +88,8 @@
 <para><emphasis remap='B'>Amfetchdump</emphasis>
 pulls one or more matching dumps from tape or from the holding disk,
 handling the reassembly of multi-tape split dump files as well as any
-tape autochanger operations.</para>
+tape autochanger operations. The dump are by default decompressed and decrypted.
+</para>
 
 <para>It will automatically use the Amanda catalog
 to locate available dumps on tape, in the same way that the <emphasis
@@ -133,11 +162,87 @@ prompting for each volume.</para></listitem>
     available.</para></listitem>
   </varlistentry>
   <varlistentry>
+    <term><option>--decompress</option></term>
+    <listitem><para>Always do the decompression, this is the default.</para></listitem>
+  </varlistentry>
+  <varlistentry>
+    <term><option>--no-decompress</option></term>
+    <listitem><para>Never do the decompression.</para></listitem>
+  </varlistentry>
+  <varlistentry>
+    <term><option>--server-decompress</option></term>
+    <listitem><para>Do the decompression only if the compression was done on
+the server.</para></listitem>
+  </varlistentry>
+  <varlistentry>
+    <term><option>--client-decompress</option></term>
+    <listitem><para>Do the decompression only if the compression was done on
+the client.</para></listitem>
+  </varlistentry>
+  <varlistentry>
+    <term><option>--decrypt</option></term>
+    <listitem><para>Always do the decryption, this is the default.</para></listitem>
+  </varlistentry>
+  <varlistentry>
+    <term><option>--no-decrypt</option></term>
+    <listitem><para>Never do the decryption.</para></listitem>
+  </varlistentry>
+  <varlistentry>
+    <term><option>--server-decrypt</option></term>
+    <listitem><para>Do the decryption only if the encryption was done on
+the server.</para></listitem>
+  </varlistentry>
+  <varlistentry>
+    <term><option>--client-decrypt</option></term>
+    <listitem><para>Do the decryption only if the encryption was done on
+the client.</para></listitem>
+  </varlistentry>
+
+  <varlistentry>
+  <term><option>--exact-match</option></term>
+  <listitem>
+<para>The host and disk are parsed as exact values</para>
+  </listitem>
+  </varlistentry>
+
+  <varlistentry>
+  <term><option>--extract</option></term>
+  <listitem>
+<para>Extract the backup on the server in the
+<replaceable>directory</replaceable> directory.</para>
+  </listitem>
+  </varlistentry>
+
+  <varlistentry>
+  <term><option>--directory</option> <replaceable>directory</replaceable></term>
+  <listitem>
+<para>Where to extract the backup with the <option>--extract</option> option.</para>
+<para>Warning: All files in that directory can be removed.</para>
+  </listitem>
+  </varlistentry>
+
+  <varlistentry>
+  <term><option>--data-path</option> amanda|directtcp</term>
+  <listitem>
+<para>The data path to use with <option>--extract</option>, the default is
+ to use the fatest data path.</para>
+  </listitem>
+  </varlistentry>
+
+  <varlistentry>
+  <term><option>--application-property</option> <replaceable>NAME=VALUE</replaceable></term>
+  <listitem>
+<para>Application property to send to the application with
+<option>--extract.</option></para>
+  </listitem>
+  </varlistentry>
+
+  <varlistentry>
     <term><option>-l</option></term>
-<listitem><para>Leave dumps in the compressed/uncompressed state in which they
-were found on tape. By default, <emphasis
-remap='B'>amfetchdump</emphasis> will automatically uncompress when
-restoring.</para></listitem>
+<listitem><para>Leave dumps in the compressed/uncompressed and
+encrypted/unencrypted state in which they were found on tape.
+It is a synonym for <option>--no-decompression</option>
+<option>--no-decryption</option></para></listitem>
   </varlistentry>
   <varlistentry>
     <term><option>-a</option></term>

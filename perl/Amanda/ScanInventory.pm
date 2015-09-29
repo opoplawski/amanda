@@ -1,8 +1,9 @@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -125,6 +126,7 @@ sub _scan {
     my $scan_running = 0;
     my $interactivity_running = 0;
     my $restart_scan = 0;
+    my $restart_scan_changer = undef;
     my $abort_scan = undef;
     my $last_err = undef; # keep the last meaningful error, the one reported
 			  # to the user, most scan end with the notfound error,
@@ -159,10 +161,22 @@ sub _scan {
 
     step restart_scan => sub {
 	$restart_scan = 0;
+
+	# Reload the tapelist at every scan.
+	$self->{'tapelist'}->reload(0);
+
+	if ($restart_scan_changer) {
+	    $self->{'chg'}->quit() if $self->{'chg'} != $self->{'initial_chg'};
+	    $self->{'chg'} = $restart_scan_changer;
+	    $restart_scan_changer = undef;
+	}
 	return $steps->{'get_inventory'}->();
     };
 
     step get_inventory => sub {
+	if ($remove_undef_state and $self->{'chg'}->{'scan-require-update'}) {
+	    $self->{'chg'}->update();
+	}
 	$self->{'chg'}->inventory(inventory_cb => $steps->{'parse_inventory'});
     };
 
@@ -172,6 +186,9 @@ sub _scan {
 	if ($err && $err->notimpl) {
 	    #inventory not implemented
 	    die("no inventory");
+	} elsif ($err and $err->fatal) {
+	    #inventory fail
+	    return $steps->{'call_result_cb'}->($err, undef);
 	}
 	return $steps->{'handle_error'}->($err, undef) if $err;
 
@@ -213,6 +230,7 @@ sub _scan {
 	    }
 	}
 
+	$self->{'slot-error-message'} = undef;
 	($action, $action_slot) = $self->analyze($inventory, \%seen, $res);
 
 	if ($action == Amanda::ScanInventory::SCAN_DONE) {
@@ -221,6 +239,7 @@ sub _scan {
 
 	if (defined $res) {
 	    $res->release(finished_cb => $steps->{'released'});
+	    $res = undef;
 	} else {
 	    $steps->{'released'}->();
 	}
@@ -231,7 +250,7 @@ sub _scan {
 	    $slot_scanned = $action_slot;
 	    $self->_user_msg(scan_slot => 1,
 			     slot => $slot_scanned);
-	    return $self->{'changer'}->load(
+	    return $self->{'chg'}->load(
 			slot => $slot_scanned,
 			set_current => $params{'set_current'},
 			res_cb => $steps->{'slot_loaded'});
@@ -256,18 +275,49 @@ sub _scan {
     step slot_loaded => sub {
 	(my $err, $res) = @_;
 
+	$self->{'slot_loaded_err'} = $err;
+
 	# we don't responsd to abort_scan or restart_scan here, since we
 	# have an open reservation that we should deal with.
+
+	# change status of slot in error if that one succeeded.
+	if (defined $self->{'slot-error-message'} and
+	    $res and defined $res->{'device'} and
+	    $self->{'slot-error-message'} ne $res->{'device'}->error) {
+	    # mark all unseen slots with that error message as unknown state
+	    for my $i (0..(scalar(@$inventory)-1)) {
+		my $sl = $inventory->[$i];
+		next if $seen{$sl->{slot}};
+		next if $self->{'slot-error-message'} ne $sl->{'device_error'};
+		# mark the slot as unknown
+		$inventory->[$i] = { slot  => $sl->{'slot'},
+				     state => $sl->{'state'}};
+	    }
+	    if ($self->{'chg'}->can("set_error_to_unknown")) {
+		$self->{'chg'}->set_error_to_unknown(
+			error_message => $self->{'slot-error-message'},
+			set_to_unknown_cb => $steps->{'set_to_unknown_cb'});
+	    }
+	} else {
+	    return $steps->{'set_to_unknown_cb'}->();
+	}
+    };
+
+    step set_to_unknown_cb => sub {
+	my $err = $self->{'slot_loaded_err'};
+	$self->{'slot_loaded_err'} = undef;
 
 	my $label;
 	if ($res && defined $res->{device} &&
 	    $res->{device}->status == $DEVICE_STATUS_SUCCESS) {
 	    $label = $res->{device}->volume_label;
 	}
+	my $relabeled = !defined($label) || $label !~ /$self->{'labelstr'}/;
 	$self->_user_msg(slot_result => 1,
 			 slot => $slot_scanned,
 			 label => $label,
 			 err  => $err,
+			 relabeled => $relabeled,
 			 res  => $res);
 	if ($res) {
 	    my $f_type;
@@ -402,9 +452,11 @@ sub _scan {
     };
 
     step after_poll => sub {
-	$poll_src->remove() if defined $poll_src;
-	$poll_src = undef;
-	return $steps->{'restart_scan'}->();
+	if ($poll_src) {
+	    $poll_src->remove();
+	    $poll_src = undef;
+	    return $steps->{'restart_scan'}->();
+	}
     };
 
     step scan_interactivity => sub {
@@ -445,6 +497,9 @@ sub _scan {
 	    }
 	}
 
+	# remove leading and trailing space
+	$message =~ s/^ +//g;
+	$message =~ s/ +$//g;
 	if ($message ne '') {
 	    # use a new changer
 	    my $new_chg;
@@ -456,8 +511,7 @@ sub _scan {
 	    if ($new_chg->isa("Amanda::Changer::Error")) {
 		return $steps->{'scan_interactivity'}->("$new_chg");
 	    }
-	    $self->{'chg'}->quit() if $self->{'chg'} != $self->{'initial_chg'};
-	    $self->{'chg'} = $new_chg;
+	    $restart_scan_changer = $new_chg;
 	    %seen = ();
 	} else {
 	    $remove_undef_state = 1;
@@ -494,13 +548,14 @@ sub _scan {
 	$poll_src = undef;
 	$interactivity_running = 0;
 	$self->{'interactivity'}->abort() if defined $self->{'interactivity'};
-	$self->{'chg'}->quit() if $self->{'chg'} != $self->{'initial_chg'} and !$res;
+	$self->{'chg'}->quit() if $self->{'chg'} != $self->{'initial_chg'} and
+				  !$res;
 	if ($err) {
 	    $self->{'scanning'} = 0;
 	    return $result_cb->($err, $res);
 	}
 	$label = $res->{'device'}->volume_label;
-	if (!defined $label) {
+	if (!defined($label) || $label !~ /$self->{'labelstr'}/) {
 	    $res->get_meta_label(finished_cb => $steps->{'got_meta_label'});
 	    return;
 	}
@@ -524,6 +579,75 @@ sub _scan {
     };
 }
 
+sub volume_is_labelable {
+    my $self = shift;
+    my $sl = shift;
+    my $dev_status  = $sl->{'device_status'};
+    my $f_type = $sl->{'f_type'};
+    my $label = $sl->{'label'};
+    my $slot = $sl->{'slot'};
+    my $chg = $self->{'chg'};
+    my $autolabel = $chg->{'autolabel'};
+
+    if (!defined $dev_status) {
+	return 0;
+    } elsif ($dev_status & $DEVICE_STATUS_VOLUME_UNLABELED and
+	     defined $f_type and
+	     $f_type == $Amanda::Header::F_EMPTY) {
+	if (!$autolabel->{'empty'}) {
+	    $self->_user_msg(slot_result  => 1,
+			     empty        => 1,
+			     slot         => $slot);
+	    return 0;
+	}
+    } elsif ($dev_status & $DEVICE_STATUS_VOLUME_UNLABELED and
+	     defined $f_type and
+	     $f_type == $Amanda::Header::F_WEIRD) {
+	if (!$autolabel->{'non_amanda'}) {
+	    $self->_user_msg(slot_result  => 1,
+			     non_amanda   => 1,
+			     slot         => $slot);
+	    return 0;
+	}
+    } elsif ($dev_status & $DEVICE_STATUS_VOLUME_ERROR) {
+	if (!$autolabel->{'volume_error'}) {
+	    $self->_user_msg(slot_result  => 1,
+			     volume_error => 1,
+			     err          => $sl->{'device_error'},
+			     slot         => $slot);
+	    return 0;
+	}
+    } elsif ($dev_status != $DEVICE_STATUS_SUCCESS) {
+	    $self->_user_msg(slot_result  => 1,
+			     not_success  => 1,
+			     err          => $sl->{'device_error'},
+			     slot         => $slot);
+	return 0;
+    } elsif ($dev_status == $DEVICE_STATUS_SUCCESS and
+	     $f_type == $Amanda::Header::F_TAPESTART) {
+	if ($label !~ /$self->{'labelstr'}/) {
+	    if (!$autolabel->{'other_config'}) {
+		$self->_user_msg(slot_result  => 1,
+				 label        => $label,
+				 labelstr     => $self->{'labelstr'},
+				 does_not_match_labelstr => 1,
+				 slot         => $slot);
+		return 0;
+	    }
+	} else {
+	   my $vol_tle = $self->{'tapelist'}->lookup_tapelabel($label);
+	   if (!$vol_tle) {
+		$self->_user_msg(slot_result  => 1,
+				 label        => $label,
+				 not_in_tapelist => 1,
+				 slot         => $slot);
+		return 0;
+	   }
+	}
+    }
+
+    return 1;
+}
 package Amanda::ScanInventory::Config;
 
 sub new {

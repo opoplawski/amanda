@@ -1,9 +1,10 @@
 #!@PERL@
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -183,9 +184,8 @@ sub command_estimate() {
     $pidwc = open2($rdrwc, '>&DATA', @cmdwc);
     close $wtr;
 
-    my ($msgsize) = <$rdrwc>;
     my $errmsg;
-    my $result;
+    my $result = 0;
     while (<$err>) {
 	my $matched = 0;
 	for my $regex (@{$self->{regex}}) {
@@ -199,6 +199,7 @@ sub command_estimate() {
 	$result = 1 if ($matched == 0);
 	$errmsg = $_ if (!defined $errmsg);
     }
+    my ($msgsize) = <$rdrwc>;
     waitpid $pid, 0;
     close $rdrwc;
     close $err;
@@ -252,8 +253,8 @@ sub command_backup {
 				     $Amanda::Script_App::ERROR);
    close($wtr);
 
-   unlink($self->{include_tmp}) if(-e $self->{include_tmp});
-   unlink($self->{exclude_tmp}) if(-e $self->{exclude_tmp});
+   unlink($self->{include_tmp}) if defined $self->{include_tmp} and -e $self->{include_tmp};
+   unlink($self->{exclude_tmp}) if defined $self->{exclude_tmp} and -e $self->{exclude_tmp};
 
    my $result;
    if(defined($self->{index})) {
@@ -455,18 +456,18 @@ sub command_restore {
 
    $cmd .= "f";      
 
-   if (defined($self->{exclude_list}) && (-e $self->{exclude_list}[0])) {
+   if (defined($self->{exclude_list}) && defined($self->{exclude_list}[0]) && (-e $self->{exclude_list}[0])) {
       $cmd .= "X";
    }
 
    my(@cmd) = ($self->{pfexec},$self->{suntar}, $cmd);
 
    push @cmd, "-";  # for f argument
-   if (defined($self->{exclude_list}) && (-e $self->{exclude_list}[0])) {
+   if (defined($self->{exclude_list}) && defined($self->{exclude_list}[0]) && (-e $self->{exclude_list}[0])) {
       push @cmd, $self->{exclude_list}[0]; # for X argument
    }
 
-   if(defined($self->{include_list}) && (-e $self->{include_list}[0]))  {
+   if(defined($self->{include_list}) && defined($self->{include_list}[0]) && (-e $self->{include_list}[0]))  {
       push @cmd, "-I", $self->{include_list}[0];
    }
 
@@ -477,7 +478,7 @@ sub command_restore {
    }
    debug("cmd:" . join(" ", @cmd));
    exec { $cmd[0] } @cmd;
-   die("Can't exec '", $cmd[0], "'");
+   die("Can't exec '", $cmd[0], "': $!");
 }
 
 sub command_validate {

@@ -1,8 +1,9 @@
-# Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -602,7 +603,7 @@ is($error_level, $CFGERR_ERRORS, "bogus config overwrite flagged as an error");
 my $pid = open(my $kid, "-|");
 die "Can't fork: $!" unless defined($pid);
 if (!$pid) {
-    Amanda::Config::dump_configuration();
+    Amanda::Config::dump_configuration(1, 0);
     exit 1;
 }
 my $dump_first_line = <$kid>;
@@ -1134,7 +1135,7 @@ my $properties = getconf($CNF_PROPERTY);
     );
 
 for my $pn (@prop_names) {
-    is_deeply($properties->{$pn->{'val'}}->{values}, [ "VALUE" ]);
+    is_deeply($properties->{$pn->{'val'}}->{values}, [ "VALUE" ], "property $pn->{'val'}");
 }
 
 $testconf = Installcheck::Config->new();

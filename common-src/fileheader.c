@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -38,7 +39,8 @@ static filetype_t	str2filetype(const char *);
 static void		strange_header(dumpfile_t *, const char *,
 				size_t, const char *, const char *);
 static char            *quote_heredoc(char *text, char *delimiter_prefix);
-static char            *parse_heredoc(char *line, char **saveptr);
+static char            *parse_heredoc(char *line, char **saveptr,
+				      const char *message);
 
 void
 fh_init(
@@ -139,7 +141,7 @@ parse_file_header(
 
     if (strcmp(tok, "NETDUMP:") != 0 && strcmp(tok, "AMANDA:") != 0) {
 	amfree(buf);
-	file->type = F_UNKNOWN;
+	file->type = F_WEIRD;
 	amfree(line1);
 	return;
     }
@@ -456,7 +458,7 @@ parse_file_header(
 #define SC "DLE="
 	if (strncmp(line, SC, SIZEOF(SC) - 1) == 0) {
 	    line += SIZEOF(SC) - 1;
-	    file->dle_str = parse_heredoc(line, &saveptr);
+	    file->dle_str = parse_heredoc(line, &saveptr, buffer);
 	}
 #undef SC
 
@@ -1092,7 +1094,8 @@ static char *quote_heredoc(
 
 static char *parse_heredoc(
     char  *line,
-    char **saveptr)
+    char **saveptr,
+    const char  *message)
 {
     char *result = NULL;
 
@@ -1104,6 +1107,13 @@ static char *parse_heredoc(
 	      strcmp(new_line, keyword) != 0) {
 	    result = vstrextend(&result, new_line, "\n", NULL);
 	}
+
+	if (!new_line || !g_str_equal(new_line, keyword)) {
+	    g_debug("No end of heredoc: %s", keyword);
+	    if (message)
+		g_debug("Message: %s", message);
+	}
+
 	/* make sure we have something */
 	if (!result)
 	    result = g_strdup("");

@@ -42,6 +42,19 @@ its default (60s) to compensate.  Note that you will need to increase
 
 </refsect1>
 
+<refsect1><title>DISKLIST</title>
+
+<para>The <emphasis remap='B'>diskdevice</emphasis> must be the cluster data
+directory, if it is "/var/lib/pgsql/data":</para>
+
+<programlisting>
+  HOST DISKNAME /var/lib/pgsql/data DUMPTYPE
+or
+  HOST /var/lib/pgsql/data DUMTYPE
+</programlisting>
+
+</refsect1>
+
 <refsect1><title>OPERATION</title>
 
 <para>This application implements the backup strategy described in <ulink
@@ -97,6 +110,22 @@ default).</para>
 Must be a unix path.</para>
 </listitem></varlistentry>
  <!-- ==== -->
+ <varlistentry><term>FULL-WAL</term><listitem>
+<para>Which WAL files to archive when doing a full backup.</para>
+<variablelist>
+  <varlistentry><term>FULL</term>
+<listitem><para>Backup all WAL files since the previous full backup.</para>
+</listitem> </varlistentry>
+  <varlistentry><term>INCR</term>
+<listitem><para>Backup all WAL files since the previous backup (incr or full).</para>
+</listitem> </varlistentry>
+  <varlistentry><term>NO</term>
+<listitem><para>Backup all WAL files required for that full backup</para>
+</listitem> </varlistentry>
+</variablelist>
+<para>The default is "INCR".</para>
+</listitem></varlistentry>
+ <!-- ==== -->
  <varlistentry><term>GNUTAR-PATH</term><listitem>
 <para>Path to the GNU tar executable. This option only has an effect
 during restore.  The default is set when Amanda is built by the
@@ -146,6 +175,10 @@ when Amanda is built by the --with-tmpdir configure option.</para>
  <!-- ==== -->
  <varlistentry><term>USER</term><listitem>
 <para>User to connect as. It must be a superuser.</para>
+</listitem></varlistentry>
+ <!-- ==== -->
+ <varlistentry><term>VERBOSE</term><listitem>
+<para>Do not use the --quiet output of psql.</para>
 </listitem></varlistentry>
 
 </variablelist>
@@ -258,6 +291,32 @@ the recovery.  When the recovery is complete, the server will transition
 into a running state, and will move the <filename>recovery.conf</filename>
 file aside so that it will not attempt a recovery on the next
 invocation.</para>
+
+</refsect1>
+
+<refsect1><title>EXAMPLE</title>
+
+In amanda.conf:
+<programlisting>
+define application app_ampgsql {
+  plugin "ampgsql"
+  property "HOST" "localhost"
+  property "ARCHIVEDIR" "/tmp/archivedir"
+  property "PASSFILE" "/etc/amanda/ampgsql.passwd"
+}
+define dumptype dump_ampgsql {
+  global
+  program "APPLICATION"
+  application app_ampgsql
+}
+</programlisting>
+
+The disklist file:
+<programlisting>
+  localhost /var/lib/pgsql/data dump_ampgsql
+or
+  localhost postgres /var/lib/pgsql/data dump_ampgsql
+</programlisting>
 
 </refsect1>
 

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -35,7 +36,7 @@
 #include "match.h"
 #include "conffile.h"
 #include "fsusage.h"
-#include "sl.h"
+#include "am_sl.h"
 #include "util.h"
 
 #define ROUND(n,x)	((x) + (n) - 1 - (((x) + (n) - 1) % (n)))
@@ -92,6 +93,10 @@ int main(int, char **);
 void traverse_dirs(char *, char *);
 
 
+void add_file_name_bsdtar(int, char *);
+void add_file_bsdtar(int, struct stat *);
+off_t final_size_bsdtar(int, char *);
+
 void add_file_name_dump(int, char *);
 void add_file_dump(int, struct stat *);
 off_t final_size_dump(int, char *);
@@ -108,12 +113,12 @@ void add_file_name_unknown(int, char *);
 void add_file_unknown(int, struct stat *);
 off_t final_size_unknown(int, char *);
 
-sl_t *calc_load_file(char *filename);
+am_sl_t *calc_load_file(char *filename);
 int calc_check_exclude(char *filename);
 
 int use_star_excl = 0;
 int use_gtar_excl = 0;
-sl_t *include_sl=NULL, *exclude_sl=NULL;
+am_sl_t *include_sl=NULL, *exclude_sl=NULL;
 
 int
 main(
@@ -200,7 +205,7 @@ main(
     /* need at least program, amname, and directory name */
 
     if(argc < 4) {
-	error(_("Usage: %s config [DUMP|STAR|GNUTAR] name dir [-X exclude-file] [-I include-file] [level date]*"),
+	error(_("Usage: %s config [BSDTAR|DUMP|STAR|GNUTAR] name dir [-X exclude-file] [-I include-file] [level date]*"),
 	      get_pname());
         /*NOTREACHED*/
     }
@@ -234,6 +239,12 @@ main(
 	final_size = final_size_gnutar;
 	use_gtar_excl++;
 #endif
+    }
+    else if(strcmp(*argv, "BSDTAR") == 0) {
+	add_file_name = add_file_name_gnutar;
+	add_file = add_file_gnutar;
+	final_size = final_size_gnutar;
+	use_gtar_excl++;
     }
     else {
 	add_file_name = add_file_name_unknown;
@@ -578,12 +589,19 @@ final_size_dump(
     struct fs_usage fsusage;
     off_t mapsize;
     char *s;
+    int   rc;
+    int   saved_errno;
 
     /* calculate the map sizes */
 
     s = stralloc2(topdir, "/.");
-    if(get_fs_usage(s, NULL, &fsusage) == -1) {
-	error("statfs %s: %s", s, strerror(errno));
+    set_root_privs(1);
+    rc = get_fs_usage(s, NULL, &fsusage);
+    saved_errno = errno;
+    set_root_privs(0);
+
+    if (rc == -1) {
+	error("statfs %s: %s", s, strerror(saved_errno));
 	/*NOTREACHED*/
     }
     amfree(s);
@@ -682,13 +700,13 @@ final_size_unknown(
 /*
  * =========================================================================
  */
-sl_t *
+am_sl_t *
 calc_load_file(
     char *	filename)
 {
     char pattern[1025];
 
-    sl_t *sl_list;
+    am_sl_t *sl_list;
 
     FILE *file = fopen(filename, "r");
 

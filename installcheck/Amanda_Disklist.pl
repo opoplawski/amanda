@@ -1,8 +1,9 @@
-# Copyright (c) 2008, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -16,7 +17,7 @@
 # Contact information: Zmanda Inc, 465 S. Mathilda Ave., Suite 300
 # Sunnyvale, CA 94086, USA, or: http://www.zmanda.com
 
-use Test::More tests => 13;
+use Test::More tests => 15;
 use strict;
 use warnings;
 
@@ -88,3 +89,12 @@ is(interface_name($x->{'config'}), "eth1", "get_interface returns an interface")
 
 @list = Amanda::Disklist::all_interfaces();
 is(scalar @list, 2, "all_interfaces returns two interfaces");
+
+Amanda::Disklist::unload_disklist();
+is(Amanda::Disklist::read_disklist(), $CFGERR_OK,
+    "read_disklist returns CFGERR_OK after unload_disklist")
+    or die("Error loading disklist");
+
+is(Amanda::Disklist::read_disklist(), $CFGERR_ERRORS,
+    "read_disklist returns CFGERR_ERRORS for second read");
+

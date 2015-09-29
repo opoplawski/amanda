@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998, 2000 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -1335,8 +1336,8 @@ extract_files_setup(
 	return -1;
     }
     amfree(service_name);
-    seteuid(0);					/* it either works ... */
-    setegid(0);
+    if (seteuid(0) != 0) { error("Can't set euid"); }; /* it either works ... */
+    if (setegid(0) != 0) { error("Can't set egid"); };
     tape_control_sock = stream_client_privileged(tape_server_name,
 						  (in_port_t)ntohs((in_port_t)sp->s_port),
 						  0,
@@ -1354,8 +1355,8 @@ extract_files_setup(
 	return -1;
     }
  
-    setegid(getgid());
-    seteuid(getuid());				/* put it back */
+    if (setegid(getgid()) != 0) { error("Can't set gid"); };
+    if (seteuid(getuid()) != 0) { error("Can't set uid"); }; /* put it back */
 
     /* do the security thing */
     line = get_security();
@@ -1514,10 +1515,10 @@ extract_files_setup(
 	buffer[nread] = '\0';
         if (sscanf(buffer, "CONNECT %hu\n",
 		(unsigned short *)&data_port) != 1) {
-	    error(_("Recieved invalid port number message from control socket: %s\n"),
+	    error(_("Received invalid port number message from control socket: %s\n"),
                   buffer);
 	    /*NOTREACHED*/
-        }	
+        }
 
 	tape_data_sock = stream_client_privileged(server_name,
 						  data_port,
@@ -1586,7 +1587,9 @@ enum dumptypes {
 	IS_DUMP,
 	IS_GNUTAR,
 	IS_TAR,
+#ifdef SAMBA_CLIENT
 	IS_SAMBA,
+#endif
 	IS_SAMBA_TAR
 };
 
@@ -1657,8 +1660,8 @@ extract_files_child(
     /* form the arguments to restore */
     files_off_tape = length_of_tape_list(elist);
     switch(dumptype) {
-    case IS_SAMBA:
 #ifdef SAMBA_CLIENT
+    case IS_SAMBA:
 	g_ptr_array_add(argv_ptr, stralloc("smbclient"));
 	smbpass = findpass(file.disk, &domain);
 	if (smbpass) {
@@ -1720,7 +1723,9 @@ extract_files_child(
 	case IS_TAR:
 	case IS_GNUTAR:
 	case IS_SAMBA_TAR:
+#ifdef SAMBA_CLIENT
 	case IS_SAMBA:
+#endif
 	    if (strcmp(fn->path, "/") == 0)
 		g_ptr_array_add(argv_ptr, stralloc("."));
 	    else
@@ -1752,8 +1757,8 @@ extract_files_child(
     g_ptr_array_add(argv_ptr, NULL);
 
     switch (dumptype) {
-    case IS_SAMBA:
 #ifdef SAMBA_CLIENT
+    case IS_SAMBA:
 	cmd = stralloc(SAMBA_CLIENT);
 	break;
 #else

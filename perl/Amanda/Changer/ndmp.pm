@@ -1,8 +1,9 @@
-# Copyright (c) 2009,2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This library is free software; you can redistribute it and/or modify it
-# under the terms of the GNU Lesser General Public License version 2.1 as
-# published by the Free Software Foundation.
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+#* License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
 #
 # This library is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -88,6 +89,7 @@ sub get_device {
     my ($device_name) = @_;
 
     my $device = Amanda::Changer::robot::get_device($self, $device_name);
+    return $device if $device->isa("Amanda::Changer::Error");
 
     # set the authentication properties for the new device based on our
     # own settings, but only if they haven't been set by the user
@@ -110,6 +112,7 @@ sub get_device {
 
 package Amanda::Changer::ndmp::Interface;
 
+use Carp;
 use Amanda::NDMP qw( :constants );
 use Amanda::Debug qw( debug warning );
 use Amanda::MainLoop;
@@ -312,7 +315,7 @@ sub _do_move_medium {
 	}
 
 	unless (defined $dst_elem) {
-	    return $finished_cb->("unknown destiation slot/drive '$dst'");
+	    return $finished_cb->("unknown destination slot/drive '$dst'");
 	}
 
 	# send a MOVE MEDIUM command
@@ -422,9 +425,8 @@ sub _parse_read_element_status {
 	my $all_descrips_len = ($all_descrips_len_msb << 16) + $all_descrips_len_lsw;
 	my $have_pvoltag = $flags & 0x80;
 	my $have_avoltag = $flags & 0x40;
-	die unless $all_descrips_len % $descrip_len == 0;
-	die unless $all_descrips_len >= $descrip_len;
-	die length($data) unless $all_descrips_len <= length($data);
+	confess unless $all_descrips_len % $descrip_len == 0;
+	confess (length($data)) unless $all_descrips_len <= length($data);
 	$data = substr($data, 8);
 
 	while ($all_descrips_len > 0) { # for each element status descriptor

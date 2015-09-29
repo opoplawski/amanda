@@ -1,10 +1,11 @@
 #!@PERL@ -w
 #
-# Copyright (c) 2007,2008 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -46,13 +47,39 @@ $ENV{'PATH'} = '/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/opt/csw/bin';
 
 $ENV{'GNUPGHOME'} = "$AMANDA_HOME/.gnupg";
 
+sub do_gpg_agent() {
+    my $path=`which gpg-agent 2>/dev/null`;
+    chomp $path;
+    if (-x $path) {
+	return "gpg-agent --daemon --";
+    }
+    return ""
+}
+
+sub which_gpg() {
+    my $path=`which gpg2 2>/dev/null`;
+    if (!$path) {
+	$path=`which gpg 2>/dev/null`;
+    }
+    if (!$path) {
+	die("no gpg or gpg2");
+    }
+    chomp $path;
+    return $path;
+}
+
 sub encrypt() {
-#   system "gpg --armor --encrypt --recipient $AMANDA";
-    system "gpg  --batch --disable-mdc --encrypt --cipher-algo AES256 --recipient $AMANDA";
+    my $gpg_agent_cmd = do_gpg_agent();
+    my $gpg = which_gpg();
+    system "$gpg_agent_cmd $gpg  --batch --disable-mdc --encrypt --cipher-algo AES256 --recipient $AMANDA";
+    sleep(2); # allow gpg-agent the time to exit
 }
 
 sub decrypt() {
-     system "gpg --batch --quiet --no-mdc-warning --secret-keyring $AM_PRIV --decrypt --passphrase-fd 3  3<$AM_PASS";
+    my $gpg_agent_cmd = do_gpg_agent();
+    my $gpg = which_gpg();
+    system "$gpg_agent_cmd $gpg --batch --quiet --no-mdc-warning --secret-keyring $AM_PRIV --decrypt --passphrase-fd 3  3<$AM_PASS";
+    sleep(2); # allow gpg-agent the time to exit
 }
 
 sub my_sig_catcher {

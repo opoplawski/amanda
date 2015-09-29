@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -242,6 +243,13 @@ read_disklist_internal(
 }
 %}
 
+%inline %{
+void
+unload_disklist_internal(void) {
+    unload_disklist();
+}
+%}
+
 %perlcode %{
 
 package Amanda::Disklist::Disk;
@@ -257,7 +265,7 @@ sub get_disk {
 
 sub all_disks {
     my ($self) = @_;
-    return values %{$Amanda::Disklist::disks{$self->{'hostname'}}};
+    return sort { $a->{'name'} cmp $b->{'name'} } values %{$Amanda::Disklist::disks{$self->{'hostname'}}};
 }
 
 package Amanda::Disklist::Interface;
@@ -279,13 +287,17 @@ sub read_disklist {
     );
 }
 
+sub unload_disklist {
+    return unload_disklist_internal();
+}
+
 sub get_host {
     my ($hostname) = @_;
     return $hosts{$hostname};
 }
 
 sub all_hosts {
-    return values %hosts;
+    return sort { $a->{'hostname'} cmp $b->{'hostname'} } values %hosts;
 }
 
 sub get_disk {
@@ -295,8 +307,10 @@ sub get_disk {
 
 sub all_disks {
     my @rv;
-    foreach my $disk (values %disks) {
-	push @rv, (values %$disk);
+    foreach my $hostname (sort keys %disks) {
+	foreach my $diskname ( sort keys %{$disks{$hostname}} ) {
+	    push @rv, $disks{$hostname}->{$diskname};
+	}
     }
     return @rv;
 }
@@ -316,3 +330,4 @@ push @EXPORT_OK, qw( read_disklist
 	get_interface all_interfaces);
 
 %}
+char *clean_dle_str_for_client(char *dle_str, am_feature_t *their_features);

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998, 2000 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -1821,7 +1822,9 @@ enum dumptypes {
 	IS_DUMP,
 	IS_GNUTAR,
 	IS_TAR,
+#ifdef SAMBA_CLIENT
 	IS_SAMBA,
+#endif
 	IS_SAMBA_TAR,
 	IS_APPLICATION_API
 };
@@ -1860,7 +1863,7 @@ extract_files_child(
 	/*NOTREACHED*/
     }
 
-    if (ctl_data->file.program != NULL) {
+    if (ctl_data->file.program[0] != '\0') {
 	if (strcmp(ctl_data->file.program, "APPLICATION") == 0)
 	    dumptype = IS_APPLICATION_API;
 #ifdef GNUTAR
@@ -1888,8 +1891,8 @@ extract_files_child(
     /* form the arguments to restore */
     files_off_tape = length_of_tape_list(ctl_data->elist);
     switch(dumptype) {
-    case IS_SAMBA:
 #ifdef SAMBA_CLIENT
+    case IS_SAMBA:
 	g_ptr_array_add(argv_ptr, stralloc("smbclient"));
 	smbpass = findpass(ctl_data->file.disk, &domain);
 	if (smbpass) {
@@ -1925,7 +1928,6 @@ extract_files_child(
     case IS_DUMP:
 	g_ptr_array_add(argv_ptr, stralloc("restore"));
 #ifdef AIX_BACKUP
-        restore_args[j++] = stralloc("-xB");
 	g_ptr_array_add(argv_ptr, stralloc("-xB"));
 #else
 #if defined(XFSDUMP)
@@ -1998,10 +2000,12 @@ extract_files_child(
     {
 	switch (dumptype) {
 	case IS_APPLICATION_API:
-    	case IS_TAR:
-    	case IS_GNUTAR:
-    	case IS_SAMBA_TAR:
-    	case IS_SAMBA:
+	case IS_TAR:
+	case IS_GNUTAR:
+	case IS_SAMBA_TAR:
+#ifdef SAMBA_CLIENT
+	case IS_SAMBA:
+#endif
 	    if (strcmp(fn->path, "/") == 0)
 		g_ptr_array_add(argv_ptr, stralloc("."));
 	    else
@@ -2023,7 +2027,7 @@ extract_files_child(
 	    g_ptr_array_add(argv_ptr, stralloc(fn->path));
 	    }
 	    break;
-  	}
+	}
     }
 #if defined(XFSDUMP)
     if (strcmp(ctl_data->file.program, XFSDUMP) == 0) {
@@ -2034,8 +2038,8 @@ extract_files_child(
     g_ptr_array_add(argv_ptr, NULL);
 
     switch (dumptype) {
-    case IS_SAMBA:
 #ifdef SAMBA_CLIENT
+    case IS_SAMBA:
     	cmd = stralloc(SAMBA_CLIENT);
     	break;
 #else
@@ -2308,7 +2312,7 @@ extract_files(void)
     g_options.hostname = dump_hostname;
     for (elist = first_tape_list(); elist != NULL;
 	 elist = next_tape_list(elist)) {
-	level_t *level = g_new0(level_t, 1);
+	am_level_t *level = g_new0(am_level_t, 1);
 	level->level = elist->level;
 	all_level = g_slist_append(all_level, level);
     }
@@ -2350,13 +2354,13 @@ extract_files(void)
 	dump_datestamp = newstralloc(dump_datestamp, elist->date);
 
 	if (last_level != -1 && dump_dle) {
-	    level_t *level;
+	    am_level_t *level;
 
-	    level = g_new0(level_t, 1);
+	    level = g_new0(am_level_t, 1);
 	    level->level = last_level;
 	    dump_dle->levellist = g_slist_append(dump_dle->levellist, level);
 
-	    level = g_new0(level_t, 1);
+	    level = g_new0(am_level_t, 1);
 	    level->level = elist->level;
 	    dump_dle->levellist = g_slist_append(dump_dle->levellist, level);
 	    run_client_scripts(EXECUTE_ON_INTER_LEVEL_RECOVER, &g_options,
@@ -2373,9 +2377,9 @@ extract_files(void)
 	    return;
 	}
 	if (dump_dle) {
-	    level_t *level;
+	    am_level_t *level;
 
-	    level = g_new0(level_t, 1);
+	    level = g_new0(am_level_t, 1);
 	    level->level = elist->level;
 	    dump_dle->levellist = g_slist_append(dump_dle->levellist, level);
 	    run_client_scripts(EXECUTE_ON_PRE_LEVEL_RECOVER, &g_options,
@@ -2684,6 +2688,7 @@ read_amidxtaped_data(
     void *	buf,
     ssize_t	size)
 {
+    size_t count;
     ctl_data_t *ctl_data = (ctl_data_t *)cookie;
     assert(cookie != NULL);
 
@@ -2719,13 +2724,13 @@ read_amidxtaped_data(
 
 	g_debug("read header %zd => %d", size, header_size);
 	if (header_size < 32768) {
-            security_stream_read(amidxtaped_streams[DATAFD].fd,
-				 read_amidxtaped_data, cookie);
+	    /* wait to read more data */
 	    return;
 	} else if (header_size > 32768) {
 	    error("header_size is %d\n", header_size);
 	}
 	assert (to_move == size);
+	security_stream_read_cancel(amidxtaped_streams[DATAFD].fd);
 	/* parse the file header */
 	fh_init(&ctl_data->file);
 	parse_file_header(header_buf, &ctl_data->file, (size_t)header_size);
@@ -2788,9 +2793,12 @@ read_amidxtaped_data(
 	/*
 	 * We ignore errors while writing to the index file.
 	 */
-	(void)full_write(ctl_data->child_pipe[1], buf, (size_t)size);
-        security_stream_read(amidxtaped_streams[DATAFD].fd,
-			     read_amidxtaped_data, cookie);
+	count = full_write(ctl_data->child_pipe[1], buf, (size_t)size);
+	if (count != (size_t)size) {
+	    g_debug("Failed to write to application: %s", strerror(errno));
+	    g_printf("Failed to write to application: %s\n", strerror(errno));
+	    stop_amidxtaped();
+	}
     }
 }
 
@@ -2864,7 +2872,8 @@ start_processing_data(
     }
 
     /* decrypt */
-    if (ctl_data->file.encrypted) {
+    if (ctl_data->file.encrypted &&
+	am_has_feature(tapesrv_features, fe_amrecover_receive_unfiltered)) {
 	char *argv[3];
 	int  crypt_out;
 	int  errfd = fileno(stderr);
@@ -2878,7 +2887,8 @@ start_processing_data(
     }
 
     /* decompress */
-    if (ctl_data->file.compressed) {
+    if (ctl_data->file.compressed &&
+	am_has_feature(tapesrv_features, fe_amrecover_receive_unfiltered)) {
 	char *argv[3];
 	int  comp_out;
 	int  errfd = fileno(stderr);

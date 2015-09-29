@@ -1,8 +1,9 @@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -26,6 +27,7 @@ use Amanda::Config qw( :init :getconf config_dir_relative );
 use Amanda::Device qw( :constants );
 use Amanda::Paths;
 use Amanda::Tapelist;
+use Amanda::Util;
 use Installcheck::Config;
 use Installcheck::Run qw(run run_err $diskname);
 use Installcheck::Dumpcache;
@@ -111,6 +113,8 @@ ok($dev->finish(),
 # test --cleanup
 
 Installcheck::Dumpcache::load("notimestamps");
+my $diskpath = Amanda::Util::sanitise_filename($Installcheck::Run::diskname);
+system ("touch -mt 201401020304.05 " . getconf($CNF_INDEXDIR) . "/localhost/$diskpath/*");
 
 $idx_count_pre = dir_file_count($CNF_INDEXDIR);
 

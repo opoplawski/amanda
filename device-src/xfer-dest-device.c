@@ -1,10 +1,11 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
- * Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -121,7 +122,13 @@ push_buffer_impl(
     /* set up the block buffer, now that we can depend on having a blocksize
      * from the device */
     if (!self->partial) {
-	self->partial = g_malloc(self->device->block_size);
+	self->partial = g_try_malloc(self->device->block_size);
+	if (self->partial == NULL) {
+	    xfer_cancel_with_error(elt, "%s: Cannot allocate memory",
+				   self->device->device_name);
+	    wait_until_xfer_cancelled(elt->xfer);
+	    return;
+	}
 	self->block_size = self->device->block_size;
 	self->partial_length = 0;
     }
@@ -129,7 +136,7 @@ push_buffer_impl(
     /* if we already have data in the buffer, add the new data to it */
     if (self->partial_length != 0) {
 	gsize to_copy = min(self->block_size - self->partial_length, len);
-	memmove(self->partial + self->partial_length, buf, to_copy);
+	memmove((char *)self->partial + self->partial_length, buf, to_copy);
 	buf = (gpointer)(to_copy + (char *)buf);
 	len -= to_copy;
 	self->partial_length += to_copy;

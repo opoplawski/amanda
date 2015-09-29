@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -98,6 +99,8 @@ typedef struct taper_s {
     off_t       left;
     off_t       written;               // Number of kb already written to tape
     int         nb_dle;                /* number of dle on the volume */
+    gboolean    ready;
+    gboolean	allow_take_scribe_from;
 } taper_t;
 
 /* holding disk reservation structure; this is built as a list parallel

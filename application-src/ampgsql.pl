@@ -1,9 +1,10 @@
 #!@PERL@
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -71,14 +72,14 @@ sub new {
     }
     # default properties
     $self->{'props'} = {
-        'pg-db' => 'template1',
         'pg-cleanupwal' => 'yes',
 	'pg-max-wal-wait' => 60,
+	'pg-full-wal' => 'incr',
     };
 
     my @PROP_NAMES = qw(pg-host pg-port pg-db pg-user pg-password pg-passfile
 			psql-path pg-datadir pg-archivedir pg-cleanupwal
-			pg-max-wal-wait);
+			pg-max-wal-wait  pg-full-wal);
 
     # config is loaded by Amanda::Application (and Amanda::Script_App)
     my $conf_props = getconf($CNF_PROPERTY);
@@ -142,6 +143,11 @@ if defined $self->{'args'}->{$pdumpname};
     if (!exists $self->{'props'}->{'pg-datadir'}) {
 	$self->{'props'}->{'pg-datadir'} =  $self->{'args'}->{'device'};
     }
+
+    $self->{'props'}->{'pg-full-wal'} ||= 'incr';
+    $self->{'props'}->{'pg-full-wal'} = lc($self->{'props'}->{'pg-full-wal'});
+    $self->{'args'}->{'verbose'} ||= "no";
+    $self->{'args'}->{'verbose'} = string_to_boolean($self->{'args'}->{'verbose'});
 
     return $self;
 }
@@ -222,7 +228,11 @@ sub _run_psql_command {
     push @cmd, "-p", $self->{'props'}->{'pg-port'} if ($self->{'props'}->{'pg-port'});
     push @cmd, "-U", $self->{'props'}->{'pg-user'} if ($self->{'props'}->{'pg-user'});
 
-    push @cmd, '--quiet', '--output', '/dev/null', '--command', $cmd, $self->{'props'}->{'pg-db'};
+    if (!($cmd =~ /pg_xlogfile_name_offset/) && !$self->{'args'}->{'verbose'}) {
+	push @cmd, '--quiet', '--output', '/dev/null';
+    }
+    push @cmd, '--command', $cmd;
+    push @cmd,$self->{'props'}->{'pg-db'} if exists $self->{'props'}->{'pg-db'};
     debug("running " . join(" ", @cmd));
 
     my ($wtr, $rdr);
@@ -244,7 +254,17 @@ sub _run_psql_command {
 	    return;
 	}
 	chomp $line;
+	return if $line =~ /^\s*$/;
 	debug("psql stdout: $line");
+	if ($cmd =~ /pg_xlogfile_name_offset/) {
+	    return if $line =~ /file_name/;
+	    return if $line =~ /------/;
+	    return if $line =~ /\(1 row\)/;
+	    if ($line =~ /^ ($_WAL_FILE_PAT)/) {
+		$self->{'switch_xlog_filename'} = $1;
+		return;
+	    }
+	}
 	if ($line =~ /NOTICE: pg_stop_backup complete, all required WAL segments have been archived/) {
 	} else {
 	    $self->print_to_server("psql stdout: $line",
@@ -262,13 +282,15 @@ sub _run_psql_command {
 	chomp $line;
 	debug("psql stderr: $line");
 	if ($line =~ /NOTICE: pg_stop_backup complete, all required WAL segments have been archived/) {
+	} elsif ($line =~ /could not connect to server/) {
+	    $self->print_to_server("psql stderr: $line",
+				   $Amanda::Script_App::ERROR);
 	} else {
 	    $self->print_to_server("psql stderr: $line",
 				   $Amanda::Script_App::GOOD);
 	}
     });
 
-    close($wtr);
     Amanda::MainLoop::run();
     close($rdr);
     close($err);
@@ -293,11 +315,17 @@ sub command_selfcheck {
        exit(1);
    };
 
-    $self->print_to_server("disk " . quote_string($self->{args}->{disk}));
+    $self->print_to_server("disk " . quote_string($self->{args}->{disk}), $Amanda::Script_App::GOOD);
 
     $self->print_to_server("ampgsql version " . $Amanda::Constants::VERSION,
 			   $Amanda::Script_App::GOOD);
 
+    if ($self->{'props'}->{'pg-full-wal'} ne "no" &&
+	$self->{'props'}->{'pg-full-wal'} ne "full" &&
+	$self->{'props'}->{'pg-full-wal'} ne "incr") {
+	$self->print_to_server("FULL-WAL property must be set to 'NO', 'FULL' or 'INCR'",
+			       $Amanda::Script_App::ERROR);
+    }
     for my $k (keys %{$self->{'args'}}) {
         print "OK application property: $k = $self->{'args'}->{$k}\n";
     }
@@ -363,6 +391,12 @@ sub command_selfcheck {
 	    _check_parent_dirs($self->{'props'}->{'pg-archivedir'});
 	}
 
+	if (defined $self->{'props'}->{'pg-datadir'} and
+	    defined $self->{'props'}->{'pg-archivedir'}) {
+	    _check("ARCHIVEDIR", "is not inside DATADIR", "is inside DATADIR",
+	           sub {$self->{'props'}->{'pg-datadir'} ne substr($self->{'props'}->{'pg-archivedir'}, 0, length($self->{'props'}->{'pg-datadir'}))});
+	}
+
 	$try_connect &&=
 	    _check("Are both PG-PASSFILE and PG-PASSWORD set?",
 		   "No (okay)",
@@ -414,19 +448,6 @@ sub command_selfcheck {
 		_check("Connecting to database server", "succeeded", "failed",
 		   \&_run_psql_command, $self, '');
 	}
-        
-	if ($try_connect) {
-	    my $label = "$self->{'label-prefix'}-selfcheck-" . time();
-	    if (_check("Call pg_start_backup", "succeeded",
-		       "failed (is another backup running?)",
-		       \&_run_psql_command, $self, "SELECT pg_start_backup('$label')")
-		and _check("Call pg_stop_backup", "succeeded", "failed",
-			   \&_run_psql_command, $self, "SELECT pg_stop_backup()")) {
-
-		_check("Get info from .backup file", "succeeded", "failed",
-		       sub {my ($start, $end) = _get_backup_info($self, $label); $start and $end});
-	    }
-	}
 
 	{
 	    my @gv = `$self->{'args'}->{'gnutar-path'} --version`;
@@ -468,9 +489,11 @@ sub _write_state_file {
 
 sub _get_prev_state {
     my $self = shift @_;
+    my $initial_level = shift;
+    $initial_level = $self->{'args'}->{'level'} - 1 if !defined $initial_level;
 
     my $end_wal;
-    for (my $level = $self->{'args'}->{'level'} - 1; $level >= 0; $level--) {
+    for (my $level = $initial_level; $level >= 0; $level--) {
         my $fn = _state_filename($self, $level);
         debug("reading state file: $fn");
         my $h = new IO::File($fn, "r");
@@ -493,6 +516,15 @@ sub _get_prev_state {
     $end_wal;
 }
 
+sub _make_dummy_dir_base {
+    my ($self) = @_;
+
+   my $dummydir = "$self->{'args'}->{'tmpdir'}/ampgsql-dummy-$$";
+   mkpath("$dummydir/$_ARCHIVE_DIR_RESTORE");
+
+   return $dummydir;
+}
+
 sub _make_dummy_dir {
     my ($self) = @_;
 
@@ -507,9 +539,10 @@ sub _make_dummy_dir {
 sub _run_tar_totals {
     my ($self, @other_args) = @_;
 
-    my @cmd = ($self->{'runtar'}, $self->{'args'}->{'config'},
+    my @cmd;
+    @cmd = ($self->{'runtar'}, $self->{'args'}->{'config'},
         $Amanda::Constants::GNUTAR, '--create', '--totals', @other_args);
-    debug("running " . join(" ", @cmd));
+    debug("running: " . join(" ", @cmd));
 
     local (*TAR_IN, *TAR_OUT, *TAR_ERR);
     open TAR_OUT, ">&", $self->{'out_h'};
@@ -523,6 +556,12 @@ sub _run_tar_totals {
     while (my $l = <TAR_ERR>) {
         if ($l =~ /^Total bytes written: (\d+)/) {
             $size = $1;
+        } elsif ($l =~ /file changed as we read it/ ||
+		 $l =~ /File removed before we read it/ ||
+		 $l =~ /File shrank by \d* bytes; padding with zeros/) {
+	    chomp $l;
+	    $self->print_to_server($l, $Amanda::Script_App::GOOD);
+	    debug("TAR_ERR: $l");
         } else {
 	    chomp $l;
 	    $self->print_to_server($l, $Amanda::Script_App::ERROR);
@@ -592,7 +631,7 @@ sub _get_backup_info {
 	       # this works!)
                local *TAROUT;
                my $conf = $self->{'args'}->{'config'} || 'NOCONFIG';
-               my $cmd = "$self->{'runtar'} $conf $Amanda::Constants::GNUTAR --create --file - --directory $self->{'props'}->{'pg-archivedir'} $fname | $Amanda::Constants::GNUTAR --file - --extract --to-stdout";
+               my $cmd = "$self->{'runtar'} $conf $Amanda::Constants::GNUTAR --create --dereference --file - --directory $self->{'props'}->{'pg-archivedir'} $fname | $Amanda::Constants::GNUTAR --file - --extract --to-stdout";
                debug("running: $cmd");
                open(TAROUT, "$cmd |");
                my ($start, $end, $lab);
@@ -606,6 +645,7 @@ sub _get_backup_info {
                        $lab = $1;
                    }
                }
+	       close TAROUT;
                if ($lab and $lab eq $label) {
                    $start_wal = $start;
                    $end_wal = $end;
@@ -644,13 +684,13 @@ sub _get_pg_version {
     my @cmd = ($self->{'props'}->{'psql-path'});
     push @cmd, "-X";
     push @cmd, "--version";
-    my $pid = open3('>&STDIN', \*VERSOUT, '>&STDERR', @cmd)
+    my $pid = open3('>STDIN', \*VERSOUT, '>STDERR', @cmd)
 	or $self->{'die_cb'}->("could not open psql to determine version");
     my @lines = <VERSOUT>;
     waitpid($pid, 0);
     $self->{'die_cb'}->("could not run psql to determine version") if (($? >> 8) != 0);
 
-    my ($maj, $min, $pat) = ($lines[0] =~ / ([0-9]+)\.([0-9]+)\.([0-9]+)$/);
+    my ($maj, $min, $pat) = ($lines[0] =~ / ([0-9]+)\.([0-9]+)\.([0-9]+).*$/);
     return $maj * 10000 + $min * 100 + $pat;
 }
 
@@ -686,11 +726,14 @@ sub _wait_for_wal {
     my $count = 0; # try at least 4 cycles
     my $stoptime = time() + $maxwait;
     while ($maxwait == 0 || time < $stoptime || $count++ < 4) {
-	return if -f "$archive_dir/$wal";
-	
+	if (-f "$archive_dir/$wal") {
+	    sleep(1);
+	    return;
+	}
+
 	# for versions 8.0 or 8.1, the only way to "force" a WAL archive is to write
 	# garbage to the database.
-	if ($pg_version < 802000) {
+	if ($pg_version < 80200) {
 	    $self->_write_garbage_to_db();
 	} else {
 	    sleep(1);
@@ -706,30 +749,14 @@ sub _base_backup {
    debug("running _base_backup");
 
    my $label = "$self->{'label-prefix'}-" . time();
-   my $tmp = "$self->{'args'}->{'tmpdir'}/$label";
 
    -d $self->{'props'}->{'pg-archivedir'} or
 	die("WAL file archive directory does not exist (or is not a directory)");
 
-   # try to protect what we create
-   my $old_umask = umask();
-   umask(077);
-
-   my $cleanup = sub {
-       umask($old_umask);
-       eval {rmtree($tmp); 1}
-   };
-   my $old_die = $self->{'die_cb'};
-   $self->{'die_cb'} = sub {
-       my $msg = shift @_;
-       $cleanup->();
-       $old_die->($msg);
-   };
-   eval {rmtree($tmp,{'keep_root' => 1}); 1} or $self->{'die_cb'}->("Failed to clear tmp directory: $@");
-   eval {mkpath($tmp, 0, 0700); 1} or $self->{'die_cb'}->("Failed to create tmp directory: $@");
-
-   _run_psql_command($self, "SELECT pg_start_backup('$label')") or
-       $self->{'die_cb'}->("Failed to call pg_start_backup");
+   if ($self->{'action'} eq 'backup') {
+       _run_psql_command($self, "SELECT pg_start_backup('$label')") or
+           $self->{'die_cb'}->("Failed to call pg_start_backup");
+   }
 
    # tar data dir, using symlink to prefix
    # XXX: tablespaces and their symlinks?
@@ -737,40 +764,68 @@ sub _base_backup {
    my $old_die_cb = $self->{'die_cb'};
    $self->{'die_cb'} = sub {
        my $msg = shift @_;
-       unless(_run_psql_command($self, "SELECT pg_stop_backup()")) {
-           $msg .= " and failed to call pg_stop_backup";
+       if ($self->{'action'} eq 'backup') {
+           unless(_run_psql_command($self, "SELECT pg_stop_backup()")) {
+               $msg .= " and failed to call pg_stop_backup";
+	   }
        }
        $old_die_cb->($msg);
    };
-   _run_tar_totals($self, '--file', "$tmp/$_DATA_DIR_TAR",
+   my $size = _run_tar_totals($self, '--dereference', '--file', "-",
        '--directory', $self->{'props'}->{'pg-datadir'},
        '--exclude', 'postmaster.pid',
        '--exclude', 'pg_xlog/*', # contains WAL files; will be handled below
+       '--transform', "s,^./pg_tblspc,./pg_tblspc_data,S;s,^,$_DATA_DIR_RESTORE/,S",
        ".");
+
+   # tar the symlink in pg_tblspc
+   $size += _run_tar_totals($self, '--file', "-",
+		'--directory', "$self->{'props'}->{'pg-datadir'}",
+		'--transform', "s,^,$_DATA_DIR_RESTORE/,S",
+                "./pg_tblspc");
+
+   if ($self->{'action'} eq 'backup') {
+       unless (_run_psql_command($self, "SELECT pg_stop_backup()")) {
+           $self->{'die_cb'}->("Failed to call pg_stop_backup");
+       }
+   }
    $self->{'die_cb'} = $old_die_cb;
 
-   unless (_run_psql_command($self, "SELECT pg_stop_backup()")) {
-       $self->{'die_cb'}->("Failed to call pg_stop_backup");
-   }
-
    # determine WAL files and append and create their tar file
-   my ($start_wal, $end_wal) = _get_backup_info($self, $label);
+   my $last_end_wal;
+   my $start_wal;
+   my $end_wal;
 
-   ($start_wal and $end_wal)
-       or $self->{'die_cb'}->("A .backup file was never found in the archive "
-			    . "dir $self->{'props'}->{'pg-archivedir'}");
-
-   $self->_wait_for_wal($end_wal);
+   if ($self->{'action'} eq 'backup') {
+	($start_wal, $end_wal)  = _get_backup_info($self, $label);
+	($start_wal and $end_wal)
+		or $self->{'die_cb'}->("A .backup file was never found in the archive "
+				    . "dir $self->{'props'}->{'pg-archivedir'}");
+	$self->_wait_for_wal($end_wal);
+	if ($self->{'props'}->{'pg-full-wal'} eq "full") {
+	    $last_end_wal = _get_prev_state($self, 0);
+	} elsif ($self->{'props'}->{'pg-full-wal'} eq "incr") {
+	    $last_end_wal = _get_prev_state($self, 10);
+	}
+   } else {
+	$start_wal = undef;
+	$end_wal = _get_prev_state($self, 0);
+   }
 
    # now grab all of the WAL files, *inclusive* of $start_wal
    my @wal_files;
    my $adir = new IO::Dir($self->{'props'}->{'pg-archivedir'});
+   $adir or $self->{'die_cb'}->("Could not open archive WAL directory");
    while (defined(my $fname = $adir->read())) {
        if ($fname =~ /^$_WAL_FILE_PAT$/) {
-           if (($fname ge $start_wal) and ($fname le $end_wal)) {
+           if (!defined $end_wal ||
+	       (!defined $start_wal and ($fname le $end_wal)) ||
+	       (defined $start_wal and ($fname ge $start_wal) and
+		($fname le $end_wal)) ||
+	       (defined $last_end_wal and ($fname gt $last_end_wal) and ($fname le $end_wal))) {
                push @wal_files, $fname;
                debug("will store: $fname");
-           } elsif ($fname lt $start_wal) {
+           } elsif (defined $start_wal and $fname lt $start_wal) {
                $self->{'unlink_cb'}->("$self->{'props'}->{'pg-archivedir'}/$fname");
            }
        }
@@ -778,29 +833,54 @@ sub _base_backup {
    $adir->close();
 
    if (@wal_files) {
-       _run_tar_totals($self, '--file', "$tmp/$_ARCHIVE_DIR_TAR",
-	   '--directory', $self->{'props'}->{'pg-archivedir'}, @wal_files);
+       $size += _run_tar_totals($self, '--dereference', '--file', "-",
+	   '--directory', $self->{'props'}->{'pg-archivedir'},
+	   '--transform', "s,^,$_ARCHIVE_DIR_RESTORE/,S",
+	   @wal_files);
+       #take the directory itself
+       $size += _run_tar_totals($self, '--dereference', '--file', "-",
+	   '--directory', $self->{'props'}->{'pg-archivedir'},
+	   '--transform', "s,^,$_ARCHIVE_DIR_RESTORE/,S",
+	   '--no-recursion', '.');
    } else {
-       my $dummydir = $self->_make_dummy_dir();
-       $self->{'done_cb'}->(_run_tar_totals($self, '--file', '-',
-           '--directory', $dummydir, "empty-incremental"));
+       my $dummydir = $self->_make_dummy_dir_base();
+       $self->{'done_cb'}->(_run_tar_totals($self, '--dereference', '--file', '-',
+           '--directory', $dummydir, "$_ARCHIVE_DIR_RESTORE"));
        rmtree($dummydir);
    }
 
-   # create the final tar file
-   my $size = _run_tar_totals($self, '--directory', $tmp, '--file', '-',
-       $_ARCHIVE_DIR_TAR, $_DATA_DIR_TAR);
+    $self->{'state_cb'}->($self, $end_wal);
 
-   $self->{'state_cb'}->($self, $end_wal);
+    # remove older WAL files.
+    # should be done only on confirmation the backup succeeded from the server
+    if (defined $start_wal || defined $last_end_wal) {
+	my $adir = new IO::Dir($self->{'props'}->{'pg-archivedir'});
+	$adir or $self->{'die_cb'}->("Could not open archive WAL directory");
+	while (defined(my $fname = $adir->read())) {
+	    if ($fname =~ /^$_WAL_FILE_PAT$/) {
+		if ((defined $start_wal and $fname lt $start_wal) ||
+		    (defined $last_end_wal and $fname le $last_end_wal)) {
+		    $self->{'unlink_cb'}->("$self->{'props'}->{'pg-archivedir'}/$fname");
+		}
+            }
+	}
+	$adir->close();
+    }
 
-   $cleanup->();
-   $self->{'done_cb'}->($size);
+    $self->{'done_cb'}->($size);
 }
 
 sub _incr_backup {
    my ($self) = @_;
 
    debug("running _incr_backup");
+
+   if ($self->{'action'} eq 'backup') {
+      _run_psql_command($self, "SELECT file_name from pg_xlogfile_name_offset(pg_switch_xlog())");
+      if (defined($self->{'switch_xlog_filename'})) {
+	 $self->_wait_for_wal($self->{'switch_xlog_filename'});
+      }
+   }
 
    my $end_wal = _get_prev_state($self);
    if ($end_wal) {
@@ -824,15 +904,18 @@ sub _incr_backup {
 
    $self->{'state_cb'}->($self, $max_wal ? $max_wal : $end_wal);
 
+   my $size;
    if (@wal_files) {
-       $self->{'done_cb'}->(_run_tar_totals($self, '--file', '-',
-           '--directory', $self->{'props'}->{'pg-archivedir'}, @wal_files));
+       $size = _run_tar_totals($self, '--dereference', '--file', '-',
+           '--directory', $self->{'props'}->{'pg-archivedir'}, @wal_files);
    } else {
        my $dummydir = $self->_make_dummy_dir();
-       $self->{'done_cb'}->(_run_tar_totals($self, '--file', '-',
-           '--directory', $dummydir, "empty-incremental"));
+       $size = _run_tar_totals($self, '--dereference', '--file', '-',
+           '--directory', $dummydir, "empty-incremental");
        rmtree($dummydir);
    }
+
+   $self->{'done_cb'}->($size);
 }
 
 sub command_backup {
@@ -895,63 +978,99 @@ sub command_backup {
 }
 
 sub command_restore {
-   my $self = shift;
+    my $self = shift;
 
-   chdir(Amanda::Util::get_original_cwd());
-   if (defined $self->{'args'}->{directory}) {
-      if (!-d $self->{'args'}->{directory}) {
-	 $self->print_to_server_and_die("Directory $self->{directory}: $!",
-					$Amanda::Script_App::ERROR);
-      }
-      if (!-w $self->{'args'}->{directory}) {
-	 $self->print_to_server_and_die("Directory $self->{directory}: $!",
-					$Amanda::Script_App::ERROR);
-      }
-      chdir($self->{'args'}->{directory});
-   }
-   my $cur_dir = POSIX::getcwd();
+    chdir(Amanda::Util::get_original_cwd());
+    if (defined $self->{'args'}->{directory}) {
+	if (!-d $self->{'args'}->{directory}) {
+	    $self->print_to_server_and_die("Directory $self->{directory}: $!",
+					   $Amanda::Script_App::ERROR);
+	}
+	if (!-w $self->{'args'}->{directory}) {
+	    $self->print_to_server_and_die("Directory $self->{directory}: $!",
+					   $Amanda::Script_App::ERROR);
+	}
+	chdir($self->{'args'}->{directory});
+    }
+    my $cur_dir = POSIX::getcwd();
 
-   if (!-d $_ARCHIVE_DIR_RESTORE) {
-       mkdir($_ARCHIVE_DIR_RESTORE) or die("could not create archive WAL directory: $!");
-   }
-   my $status;
-   if ($self->{'args'}->{'level'} > 0) {
-       debug("extracting incremental backup to $cur_dir/$_ARCHIVE_DIR_RESTORE");
-       $status = system($self->{'args'}->{'gnutar-path'}, '--extract',
-	   '--file', '-',
-	   '--ignore-zeros',
-	   '--exclude', 'empty-incremental',
-           '--directory', $_ARCHIVE_DIR_RESTORE) >> 8;
-       (0 == $status) or die("Failed to extract level $self->{'args'}->{'level'} backup (exit status: $status)");
-   } else {
-       debug("extracting base of full backup");
-       if (!-d $_DATA_DIR_RESTORE) {
-           mkdir($_DATA_DIR_RESTORE) or die("could not create archive WAL directory: $!");
-       }
-       $status = system($self->{'args'}->{'gnutar-path'}, '--extract', '--file', '-',) >> 8;
-       (0 == $status) or die("Failed to extract base backup (exit status: $status)");
+    if (!-d $_ARCHIVE_DIR_RESTORE) {
+	mkdir($_ARCHIVE_DIR_RESTORE) or die("could not create archive WAL directory: $!");
+    }
+    my $status;
+    if ($self->{'args'}->{'level'} > 0) {
+	debug("extracting incremental backup to $cur_dir/$_ARCHIVE_DIR_RESTORE");
+	$status = system($self->{'args'}->{'gnutar-path'},
+		'--extract',
+		'--dereference',
+		'--file', '-',
+		'--ignore-zeros',
+		'--exclude', 'empty-incremental',
+		'--directory', $_ARCHIVE_DIR_RESTORE) >> 8;
+	my $uid = (stat $_ARCHIVE_DIR_RESTORE)[4];
+	if ($uid == 0) {
+	    opendir(my $dh, $_ARCHIVE_DIR_RESTORE) || die;
+	    while (my $name = readdir $dh) {
+		next if $name == '.';
+		next if $name == '..';
+		my $uid = (stat "$_ARCHIVE_DIR_RESTORE/$name")[4];
+		my $gid = (stat "$_ARCHIVE_DIR_RESTORE/$name")[5];
+		chown $uid, $gid, $_ARCHIVE_DIR_RESTORE;
+		last;
+	    }
+	    closedir $dh;
+	}
+	(0 == $status) or die("Failed to extract level $self->{'args'}->{'level'} backup (exit status: $status)");
+    } else {
+	debug("extracting base of full backup to $cur_dir/$_DATA_DIR_RESTORE");
+	debug("extracting archive dir to $cur_dir/$_ARCHIVE_DIR_RESTORE");
+	if (!-d $_DATA_DIR_RESTORE) {
+	    mkdir($_DATA_DIR_RESTORE) or die("could not create archive WAL directory: $!");
+	}
+	my @cmd = ($self->{'args'}->{'gnutar-path'}, '--extract',
+		'--dereference',
+		'--file', '-',
+		'--ignore-zero',
+		'--transform', "s,^DATA/,$_DATA_DIR_RESTORE/,S",
+		'--transform', "s,^WAL/,$_ARCHIVE_DIR_RESTORE/,S");
+	debug("run: " . join ' ',@cmd);
+	$status = system(@cmd) >> 8;
+	(0 == $status) or die("Failed to extract base backup (exit status: $status)");
 
-       debug("extracting archive dir to $cur_dir/$_ARCHIVE_DIR_RESTORE");
-       $status = system($self->{'args'}->{'gnutar-path'}, '--extract',
-	  '--exclude', 'empty-incremental',
-          '--file', $_ARCHIVE_DIR_TAR, '--directory', $_ARCHIVE_DIR_RESTORE) >> 8;
-       (0 == $status) or die("Failed to extract archived WAL files from base backup (exit status: $status)");
-       if (unlink($_ARCHIVE_DIR_TAR) == 0) {
-           debug("Failed to unlink '$_ARCHIVE_DIR_TAR': $!");
-           $self->print_to_server("Failed to unlink '$_ARCHIVE_DIR_TAR': $!",
-				  $Amanda::Script_App::ERROR);
-       }
+	if (-f $_ARCHIVE_DIR_TAR) {
+	    debug("extracting archive dir to $cur_dir/$_ARCHIVE_DIR_RESTORE");
+	    my @cmd = ($self->{'args'}->{'gnutar-path'}, '--extract',
+		'--dereference',
+		'--exclude', 'empty-incremental',
+		'--file', $_ARCHIVE_DIR_TAR, '--directory',
+		$_ARCHIVE_DIR_RESTORE);
+	    debug("run: " . join ' ',@cmd);
+	    $status = system(@cmd) >> 8;
+	    (0 == $status) or die("Failed to extract archived WAL files from base backup (exit status: $status)");
+	    if (unlink($_ARCHIVE_DIR_TAR) == 0) {
+		debug("Failed to unlink '$_ARCHIVE_DIR_TAR': $!");
+		$self->print_to_server(
+				"Failed to unlink '$_ARCHIVE_DIR_TAR': $!",
+				$Amanda::Script_App::ERROR);
+	    }
+	}
 
-       debug("extracting data dir to $cur_dir/$_DATA_DIR_RESTORE");
-       $status = system($self->{'args'}->{'gnutar-path'}, '--extract',
-          '--file', $_DATA_DIR_TAR, '--directory', $_DATA_DIR_RESTORE) >> 8;
-       (0 == $status) or die("Failed to extract data directory from base backup (exit status: $status)");
-       if (unlink($_DATA_DIR_TAR) == 0) {
-           debug("Failed to unlink '$_DATA_DIR_TAR': $!");
-           $self->print_to_server("Failed to unlink '$_DATA_DIR_TAR': $!",
-				  $Amanda::Script_App::ERROR);
-       }
-   }
+	if (-f $_DATA_DIR_TAR) {
+	    debug("extracting data dir to $cur_dir/$_DATA_DIR_RESTORE");
+	    my @cmd = ($self->{'args'}->{'gnutar-path'}, '--extract',
+		'--dereference',
+		'--file', $_DATA_DIR_TAR,
+		'--directory', $_DATA_DIR_RESTORE);
+	    debug("run: " . join ' ',@cmd);
+	    $status = system(@cmd) >> 8;
+	    (0 == $status) or die("Failed to extract data directory from base backup (exit status: $status)");
+	    if (unlink($_DATA_DIR_TAR) == 0) {
+		debug("Failed to unlink '$_DATA_DIR_TAR': $!");
+		$self->print_to_server("Failed to unlink '$_DATA_DIR_TAR': $!",
+				$Amanda::Script_App::ERROR);
+	    }
+	}
+    }
 }
 
 sub command_validate {
@@ -1018,12 +1137,14 @@ GetOptions(
     'cleanupwal=s',
     'archivedir=s',
     'db=s',
+    'full-wal=s',
     'host=s',
     'max-wal-wait=s',
     'passfile=s',
     'port=s',
     'user=s',
-    'psql-path=s'
+    'psql-path=s',
+    'verbose=s'
 ) or usage();
 
 if (defined $opt_version) {

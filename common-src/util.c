@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -328,7 +329,8 @@ interruptible_accept(
     struct sockaddr *addr,
     socklen_t *addrlen,
     gboolean (*prolong)(gpointer data),
-    gpointer prolong_data)
+    gpointer prolong_data,
+    time_t timeout)
 {
     SELECT_ARG_TYPE readset;
     struct timeval tv;
@@ -342,8 +344,12 @@ interruptible_accept(
     memset(&readset, 0, SIZEOF(readset));
 
     while (1) {
-	if (!prolong(prolong_data)) {
+	if (prolong && !prolong(prolong_data)) {
 	    errno = 0;
+	    return -1;
+	}
+	if (time(NULL) > timeout) {
+	    errno = ETIMEDOUT;
 	    return -1;
 	}
 
@@ -352,7 +358,7 @@ interruptible_accept(
 
 	/* try accepting for 1s */
 	memset(&tv, 0, SIZEOF(tv));
-    	tv.tv_sec = 1;
+	tv.tv_sec = 1;
 
 	nfound = select(sock+1, &readset, NULL, NULL, &tv);
 	if (nfound < 0) {
@@ -960,6 +966,7 @@ expand_braced_alternates(
     char * source)
 {
     GPtrArray *rval = g_ptr_array_new();
+    gpointer *pdata;
 
     g_ptr_array_add(rval, g_strdup(""));
 
@@ -971,6 +978,8 @@ expand_braced_alternates(
 	new_components = parse_braced_component(&source);
 	if (!new_components) {
 	    /* parse error */
+	    for (i = 0, pdata = rval->pdata; i < rval->len; i++)
+		g_free(*pdata++);
 	    g_ptr_array_free(rval, TRUE);
 	    return NULL;
 	}
@@ -987,7 +996,11 @@ expand_braced_alternates(
 	    }
 	}
 
+	for (i = 0, pdata = rval->pdata; i < rval->len; i++)
+	    g_free(*pdata++);
 	g_ptr_array_free(rval, TRUE);
+	for (i = 0, pdata = new_components->pdata; i < new_components->len; i++)
+	    g_free(*pdata++);
 	g_ptr_array_free(new_components, TRUE);
 	rval = new_rval;
     }
@@ -1052,7 +1065,7 @@ int copy_file(
 {
     int     infd, outfd;
     int     save_errno;
-    size_t nb;
+    ssize_t nb;
     char    buf[32768];
     char   *quoted;
 
@@ -1068,7 +1081,7 @@ int copy_file(
     if ((outfd = open(dst, O_WRONLY|O_CREAT, 0600)) == -1) {
 	save_errno = errno;
 	quoted = quote_string(dst);
-	*errmsg = vstrallocf(_("Can't open file '%s' for writting: %s"),
+	*errmsg = vstrallocf(_("Can't open file '%s' for writing: %s"),
 			    quoted, strerror(save_errno));
 	amfree(quoted);
 	close(infd);
@@ -1076,7 +1089,7 @@ int copy_file(
     }
 
     while((nb=read(infd, &buf, SIZEOF(buf))) > 0) {
-	if(full_write(outfd,&buf,nb) < nb) {
+	if(full_write(outfd,&buf,nb) < (size_t)nb) {
 	    save_errno = errno;
 	    quoted = quote_string(dst);
 	    *errmsg = vstrallocf(_("Error writing to '%s': %s"),
@@ -1139,6 +1152,11 @@ add_history(
 # error No readdir() or readdir64() available!
 #endif
 
+#if (GLIB_MAJOR_VERSION > 2 || (GLIB_MAJOR_VERSION == 2 && GLIB_MINOR_VERSION >= 31))
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+
 char * portable_readdir(DIR* handle) {
 
 #ifdef USE_DIRENT64
@@ -1168,6 +1186,9 @@ char * portable_readdir(DIR* handle) {
        sure what to do about that case. */
     return strdup(entry_p->d_name);
 }
+#if (GLIB_MAJOR_VERSION > 2 || (GLIB_MAJOR_VERSION == 2 && GLIB_MINOR_VERSION >= 31))
+# pragma GCC diagnostic pop
+#endif
 
 int search_directory(DIR * handle, const char * regex,
                      SearchDirectoryFunctor functor, gpointer user_data) {
@@ -1601,7 +1622,7 @@ debug_executing(
 	cmdline = vstrextend(&cmdline, " ", arg, NULL);
 	amfree(arg);
     }
-    g_debug("Executing: %s\n", cmdline);
+    g_debug("Executing: %s", cmdline);
     amfree(cmdline);
 }
 
@@ -1663,15 +1684,231 @@ get_first_line(
     out = fdopen(outpipe[0],"r");
     err = fdopen(errpipe[0],"r");
 
-    output_string = agets(out);
-    if (!output_string)
-	output_string = agets(err);
+    if (out) {
+	output_string = agets(out);
+	fclose(out);
+    }
 
-    fclose(out);
-    fclose(err);
+    if (err) {
+	if (!output_string)
+	    output_string = agets(err);
+	fclose(err);
+    }
 
     waitpid(pid, NULL, 0);
 
     return output_string;
+}
+
+gboolean
+make_amanda_tmpdir(void)
+{
+    struct stat stat_buf;
+
+    if (stat(AMANDA_TMPDIR, &stat_buf) != 0) {
+        if (errno != ENOENT) {
+	    g_debug("Error doing a stat of AMANDA_TMPDIR (%s): %s", AMANDA_TMPDIR, strerror(errno));
+            return FALSE;
+        }
+	/* create it */
+	if (mkdir(AMANDA_TMPDIR,0700) != 0) {
+	    g_debug("Error mkdir of AMANDA_TMPDIR (%s): %s", AMANDA_TMPDIR, strerror(errno));
+	   return FALSE;
+	}
+	if (chown(AMANDA_TMPDIR, (int)get_client_uid(), (int)get_client_gid()) < 0) {
+	    g_debug("Error chown of AMANDA_TMPDIR (%s): %s", AMANDA_TMPDIR, strerror(errno));
+	    return FALSE;
+	}
+	return TRUE;
+    } else {
+	/* check permission */
+	return TRUE;
+    }
+}
+
+#define POLY 0x82F63B78
+#if defined __GNUC__ && GCC_VERSION > 40300 && (defined __x86_64__ || defined __i386__ || defined __i486__ || defined __i586__ || defined __i686__)
+static int get_sse42(void)
+{
+    uint32_t op, eax, ebx, ecx, edx;
+    op = 1;
+#ifdef __i386__
+    __asm__ volatile(
+		"pushl %%ebx;\n\t"
+		"cpuid;\n\t"
+		"movl %%ebx, %1;\n\t"
+		"popl %%ebx;\n\t"
+                : "=a" (eax), "=r" (ebx), "=c" (ecx), "=d" (edx)
+		: "a" (op)
+		: "cc"
+    );
+#else
+    __asm__ volatile(
+		"cpuid;\n\t"
+                : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+		: "a" (op)
+		: "cc"
+    );
+#endif
+    return (ecx >> 20) & 1;
+}
+#endif
+
+static uint32_t crc_table[16][256];
+static gboolean crc_initialized = FALSE;
+int have_sse42 = 0;
+void (* crc32_function)(uint8_t *buf, size_t len, crc_t *crc);
+
+#if defined __GNUC__ && GCC_VERSION > 40300 && (defined __x86_64__ || defined __i386__ || defined __i486__ || defined __i586__ || defined __i686__)
+  #include "amcrc32chw.h"
+#endif
+
+/* Run this function previously */
+void
+make_crc_table(void)
+{
+    int i;
+    int j;
+    int slice;
+
+    if (!crc_initialized) {
+#if defined __GNUC__ && GCC_VERSION > 40300 && (defined __x86_64__ || defined __i386__ || defined __i486__ || defined __i586__ || defined __i686__)
+	have_sse42 = get_sse42();
+	if (have_sse42) {
+	    crc32c_init_hw();
+	    crc32_function = &crc32c_add_hw;
+	} else
+#endif
+            crc32_function = &crc32_add_16bytes;
+
+	for (i = 0; i < 256; i++) {
+	    uint32_t c = i;
+	    for (j = 0; j < 8; j++) {
+		c = (c & 1) ? (POLY ^ (c >> 1)) : (c >> 1);
+	    }
+	    crc_table[0][i] = c;
+	}
+	for (i = 0; i < 256; i++) {
+	    for (slice = 1; slice < 16; slice++) {
+		crc_table[slice][i] = (crc_table[slice - 1][i] >> 8) ^ crc_table[0][crc_table[slice - 1][i] & 0xFF];
+	    }
+
+	}
+	crc_initialized = TRUE;
+    }
+}
+
+void
+crc32_init(
+    crc_t *crc)
+{
+    make_crc_table();
+    crc->crc = 0xFFFFFFFF;
+    crc->size = 0;
+}
+
+#ifdef __GNUC__
+  #define PREFETCH(location) __builtin_prefetch(location)
+#else
+  #define PREFETCH(location)
+#endif
+
+void crc32_add_1byte(uint8_t *buf, size_t len, crc_t *crc);
+void crc32_add_16bytes(uint8_t *buf, size_t len, crc_t *crc);
+
+void
+crc32_add_1byte(
+    uint8_t *buf,
+    size_t len,
+    crc_t *crc)
+{
+    crc->size += len;
+    while (len-- > 0) {
+       crc->crc = crc_table[0][(crc->crc ^ *buf++) & 0xFF] ^ (crc->crc >> 8);
+     }
+}
+
+void
+crc32_add_16bytes(
+    uint8_t *buf,
+    size_t len,
+    crc_t *crc)
+{
+    uint32_t *buf32 = (uint32_t *)buf;
+    size_t i;
+    crc->size += len;
+
+    while (len >= 256) {
+	PREFETCH(((const char*) buf) + 256);
+	for (i = 0; i < 4; i++) {
+#ifdef WORDS_BIGENDIAN
+            uint32_t one   = *buf32++ ^ swap(crc->crc);
+            uint32_t two   = *buf32++;
+            uint32_t three = *buf32++;
+            uint32_t four  = *buf32++;
+            crc->crc  = crc_table[ 0][ four         & 0xFF] ^
+                        crc_table[ 1][(four  >>  8) & 0xFF] ^
+                        crc_table[ 2][(four  >> 16) & 0xFF] ^
+                        crc_table[ 3][(four  >> 24) & 0xFF] ^
+                        crc_table[ 4][ three        & 0xFF] ^
+                        crc_table[ 5][(three >>  8) & 0xFF] ^
+                        crc_table[ 6][(three >> 16) & 0xFF] ^
+                        crc_table[ 7][(three >> 24) & 0xFF] ^
+                        crc_table[ 8][ two          & 0xFF] ^
+                        crc_table[ 9][(two   >>  8) & 0xFF] ^
+                        crc_table[10][(two   >> 16) & 0xFF] ^
+                        crc_table[11][(two   >> 24) & 0xFF] ^
+                        crc_table[12][ one          & 0xFF] ^
+                        crc_table[13][(one   >>  8) & 0xFF] ^
+                        crc_table[14][(one   >> 16) & 0xFF] ^
+                        crc_table[15][(one   >> 24) & 0xFF];
+
+#else
+	    uint32_t one   = *buf32++ ^ crc->crc;
+	    uint32_t two   = *buf32++;
+	    uint32_t three = *buf32++;
+	    uint32_t four  = *buf32++;
+	    crc->crc  = crc_table[ 0][(four  >> 24) & 0xFF] ^
+		        crc_table[ 1][(four  >> 16) & 0xFF] ^
+		        crc_table[ 2][(four  >>  8) & 0xFF] ^
+		        crc_table[ 3][ four         & 0xFF] ^
+		        crc_table[ 4][(three >> 24) & 0xFF] ^
+		        crc_table[ 5][(three >> 16) & 0xFF] ^
+		        crc_table[ 6][(three >>  8) & 0xFF] ^
+		        crc_table[ 7][ three        & 0xFF] ^
+		        crc_table[ 8][(two   >> 24) & 0xFF] ^
+		        crc_table[ 9][(two   >> 16) & 0xFF] ^
+		        crc_table[10][(two   >>  8) & 0xFF] ^
+		        crc_table[11][ two          & 0xFF] ^
+		        crc_table[12][(one   >> 24) & 0xFF] ^
+		        crc_table[13][(one   >> 16) & 0xFF] ^
+		        crc_table[14][(one   >>  8) & 0xFF] ^
+		        crc_table[15][ one          & 0xFF];
+#endif
+	}
+	len -= 4*16;
+    }
+    buf = (uint8_t *)buf32;
+
+    while (len-- > 0) {
+	crc->crc = crc_table[0][(crc->crc ^ *buf++) & 0xFF] ^ (crc->crc >> 8);
+    }
+}
+
+void
+crc32_add(
+    uint8_t *buf,
+    size_t len,
+    crc_t *crc)
+{
+    crc32_function(buf, len, crc);
+    return;
+}
+
+uint32_t
+crc32_finish(
+    crc_t *crc)
+{
+    return crc->crc ^ 0xFFFFFFFF;
 }
 

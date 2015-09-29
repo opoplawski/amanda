@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-2000 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -95,6 +96,7 @@ main(
 
     safe_fd(-1, 0);
     safe_cd();
+    make_crc_table();
 
     set_pname("amservice");
     /* drop root privileges */
@@ -321,18 +323,17 @@ read_in(
     void *cookie G_GNUC_UNUSED)
 {
     size_t nread;
-    char   buf[1024];
+    char   buf[1025];
 
-    event_release(event_in);
     nread = read(0, buf, 1024);
-    if (nread == 0) {
+    if (nread <= 0) {
+	event_release(event_in);
 	security_stream_close(fd);
 	return;
     }
 
     buf[nread] = '\0';
     security_stream_write(fd, buf, nread);
-    event_in = event_register((event_id_t)0, EV_READFD, read_in, NULL);
 }
 
 static void
@@ -351,7 +352,6 @@ read_server(
 	if (errno > 0) {
 	    g_debug("failed to write to stdout: %s", strerror(errno));
 	}
-	security_stream_read(fd, read_server, NULL);
 	break;
     }
 }

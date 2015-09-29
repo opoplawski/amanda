@@ -1,8 +1,9 @@
-# Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -16,7 +17,7 @@
 # Contact information: Zmanda Inc, 465 S. Mathilda Ave., Suite 300
 # Sunnyvale, CA 94086, USA, or: http://www.zmanda.com
 
-use Test::More tests => 20;
+use Test::More tests => 31;
 use strict;
 use warnings;
 
@@ -27,7 +28,11 @@ use lib "@amperldir@";
 use Installcheck;
 use Amanda::Archive;
 use Amanda::Paths;
+use Amanda::MainLoop;
+use Amanda::Debug;
 use Data::Dumper;
+
+Amanda::Debug::dbopen("installcheck");
 
 my $arch_filename = "$Installcheck::TMP/amanda_archive.bin";
 my $data_filename = "$Installcheck::TMP/some_data.bin";
@@ -78,7 +83,7 @@ pass("Create a new archive");
 $f1 = $ar->new_file("filename1");
 pass("Start an archive file");
 
-$a1 = $f1->new_attr(18);
+$a1 = $f1->new_attr($Amanda::Archive::AMAR_ATTR_GENERIC_DATA);
 $a1->add_data("foo!", 0);
 $a2 = $f1->new_attr(19);
 $a2->add_data("BAR!", 0);
@@ -96,9 +101,13 @@ open($dfh, "<", $data_filename);
 $a1->add_data_fd(fileno($dfh), 1);
 close($dfh);
 pass("Add data from a file descriptor");
+ok($a1->size() == 5242880, "size attribute A is " . $a1->size());
+ok($f1->size() == 5242961, "size file A is " . $f1->size());
+ok($ar->size() == 5242989, "Size A is " . $ar->size);
 
 $a1 = undef;
 pass("Close attribute when its refcount hits zero");
+ok($ar->size() == 5242989, "Size B is " . $ar->size);
 
 $f2 = Amanda::Archive::File->new($ar, "filename2");
 pass("Add a new file (filename2)");
@@ -106,9 +115,15 @@ pass("Add a new file (filename2)");
 $a1 = $f2->new_attr(82);
 $a1->add_data("word", 1);
 pass("Add data to it");
+ok($a1->size() == 4, "size attribute A1 is " . $a1->size());
+ok($f2->size() == 29, "size file F2 is " . $f2->size());
+ok($ar->size() == 5243018, "Size C is " . $ar->size);
 
 $a2->add_data("barrrrr?", 0);	# note no EOA
 pass("Add more data to first attribute");
+ok($a2->size() == 16, "size attribute A2 is " . $a2->size());
+ok($f1->size() == 5242977, "size file F1 is " . $f1->size());
+ok($ar->size() == 5243034, "Size D is " . $ar->size);
 
 ($f1, $posn) = $ar->new_file("posititioned file", 1);
 ok($posn > 0, "new_file returns a positive position");
@@ -244,5 +259,95 @@ is_deeply([@res], [
     or diag(Dumper(\@res));
 $ar->close();
 
+unlink($arch_filename);
+
+open($fh, ">", $arch_filename);
+$ar = Amanda::Archive->new(fileno($fh), ">");
+$f1 = $ar->new_file("filename1");
+$a1 = $f1->new_attr($Amanda::Archive::AMAR_ATTR_GENERIC_DATA);
+
+open($dfh, "<", $data_filename);
+$a1->add_data_fd(fileno($dfh), 1);
+close($dfh);
+
+$a1->close();
+$f1->close();
+
+$f1 = $ar->new_file("filename2");
+$a1 = $f1->new_attr($Amanda::Archive::AMAR_ATTR_GENERIC_DATA);
+$a1->add_data("abcdefgh" x 16384);
+$a1->close();
+$f1->close();
+
+$f1 = $ar->new_file("filename3");
+$a1 = $f1->new_attr($Amanda::Archive::AMAR_ATTR_GENERIC_DATA);
+$a1->add_data("abcdefgh" x 16384);
+$a1->close();
+$f1->close();
+
+$ar->close();
+close($fh);
+
+open($fh, "<", $arch_filename);
+$ar = Amanda::Archive->new(fileno($fh), "<");
+@res = ();
+my $fh1;
+open $fh1, ">/dev/null" || die("/dev/null");
+$ar->set_read_cb(
+    file_start => sub {
+	my ($user_data, $filenum, $filename) = @_;
+	push @res, ["file_start", @_ ];
+	if ($filename eq "filename1") {
+	    my $time_str = Amanda::MainLoop::timeout_source(500);
+	    $time_str->set_callback(sub {
+		$ar->read_to($filenum, $Amanda::Archive::AMAR_ATTR_GENERIC_DATA, fileno($fh1));
+		$ar->start_read();
+		$time_str->remove();
+	    });
+	    $ar->stop_read();
+	}
+	return "dog $filenum $filename";
+    },
+    file_finish => sub {
+	my ($user_data, $filenum, $filename) = @_;
+	push @res, [ "file_finish", @_ ];
+    },
+    16 => sub {
+	my ($user_data, $filenum, $file_data, $attrid,
+	    $attr_data, $data, $eoa, $truncated) = @_;
+	push @res, [ "frag", $user_data, $filenum, $file_data, $attrid, $attr_data, $eoa, $truncated ];
+    },
+    0 => sub {
+	my ($user_data, $filenum, $file_data, $attrid,
+	    $attr_data, $data, $eoa, $truncated) = @_;
+	push @res, [ "16", $user_data, $filenum, $file_data, $attrid, $attr_data, $eoa, $truncated ];
+    },
+    user_data => $user_data,
+    done => sub {
+	my ($error) = @_;
+	push @res, [ "done" , @_ ];
+	Amanda::MainLoop::quit();
+    }
+);
+Amanda::MainLoop::run();
+close $fh1;
+$ar->close();
+
+is_deeply([@res], [
+	[ 'file_start', $user_data, 1, 'filename1' ],
+	[ 'file_finish', $user_data, 'dog 1 filename1', 1, 0 ],
+	[ 'file_start', $user_data, 2, 'filename2' ],
+	[ 'frag', $user_data, 2, "dog 2 filename2", 16, undef, 0, 0 ],
+	[ 'frag', $user_data, 2, "dog 2 filename2", 16, 4, 1, 0 ],
+	[ 'file_finish', $user_data, 'dog 2 filename2', 2, 0 ],
+	[ 'file_start', $user_data, 3, 'filename3' ],
+	[ 'frag', $user_data, 3, "dog 3 filename3", 16, undef, 0, 0 ],
+	[ 'frag', $user_data, 3, "dog 3 filename3", 16, 8, 1, 0 ],
+	[ 'file_finish', $user_data, "dog 3 filename3", 3, 0 ],
+	[ 'done' ]
+], "buffering parameters parsed correctly")
+    or diag(Dumper(\@res));
 unlink($data_filename);
 unlink($arch_filename);
+
+

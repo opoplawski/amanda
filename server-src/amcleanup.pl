@@ -1,9 +1,10 @@
 #!@PERL@
-# Copyright (c) 2008, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 # 
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published 
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 # 
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -29,7 +30,7 @@ use Amanda::Constants;
 use Amanda::Process;
 use Amanda::Logfile;
 use Amanda::Holding;
-
+use Amanda::Debug qw( debug );
 my $kill_enable=0;
 my $process_alive=0;
 my $verbose=0;
@@ -44,6 +45,7 @@ Amanda::Util::setup_application("amcleanup", "server", $CONTEXT_CMDLINE);
 
 my $config_overrides = new_config_overrides($#ARGV+1);
 
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw(bundling));
 GetOptions(
     'version' => \&Amanda::Util::version_opt,
@@ -92,7 +94,7 @@ $Amanda_process->load_ps_table();
 if (-f "$logfile") {
     $Amanda_process->scan_log($logfile);
 } elsif (!$process_alive) {
-    $Amanda_process->set_master_process($config_name, "amdump", "amflush");
+    $Amanda_process->set_master_process($config_name, "amdump", "amflush", "amvault");
 }
 
 $Amanda_process->add_child();

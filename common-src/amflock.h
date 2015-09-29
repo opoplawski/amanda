@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -30,7 +31,7 @@
  * New interface
  */
 
-typedef struct file_lock_ {
+typedef struct file_lock {
     /* the entire contents of the locked file */
     char *data;
     size_t len;

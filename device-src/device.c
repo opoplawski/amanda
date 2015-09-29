@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -63,6 +64,9 @@ void device_api_init(void) {
     glib_init();
     device_property_init();
     driverList = g_hash_table_new(g_str_hash, g_str_equal);
+
+    device_status_flags_get_type();	/* to register it */
+    device_get_type();			/* to register it */
 
     /* register other types and devices. */
     null_device_register();
@@ -258,6 +262,10 @@ static void device_finalize(GObject *obj_self) {
     amfree(self->volume_label);
     amfree(self->volume_time);
     amfree(self->volume_header);
+    if (self->device_mutex) {
+	g_mutex_free(self->device_mutex);
+	self->device_mutex = NULL;
+    }
     amfree(selfp->errmsg);
     amfree(selfp->statusmsg);
     g_hash_table_destroy(selfp->simple_properties);
@@ -281,6 +289,7 @@ device_init (Device * self)
     self->min_block_size = 1;
     self->max_block_size = SIZE_MAX; /* subclasses *really* should choose something smaller */
     self->block_size = DISK_BLOCK_BYTES;
+    self->allow_take_scribe_from = TRUE;
     selfp->errmsg = NULL;
     selfp->statusmsg = NULL;
     selfp->last_status = 0;
@@ -423,17 +432,13 @@ handle_device_regex(const char * user_name, char ** driver_name,
         regfree(&regex);
         return FALSE;
     } else if (reg_result == REG_NOMATCH) {
+        *driver_name = stralloc("tape");
+        *device = stralloc(user_name);
 #ifdef WANT_TAPE_DEVICE
 	g_warning(
 		"\"%s\" uses deprecated device naming convention; \n"
                 "using \"tape:%s\" instead.\n",
                 user_name, user_name);
-        *driver_name = stralloc("tape");
-        *device = stralloc(user_name);
-#else /* !WANT_TAPE_DEVICE */
-	*errmsg = newvstrallocf(*errmsg, "\"%s\" is not a valid device name.\n", user_name);
-	regfree(&regex);
-	return FALSE;
 #endif /* WANT_TAPE_DEVICE */
     } else {
         *driver_name = find_regex_substring(user_name, pmatch[1]);
@@ -526,6 +531,7 @@ device_open (char * device_name)
     device = factory(device_name, device_type, device_node);
     g_assert(device != NULL); /* factories must always return a device */
 
+    device->device_mutex = g_mutex_new();
     amfree(device_type);
     amfree(device_node);
 
@@ -648,8 +654,8 @@ dumpfile_t * make_tapestart_header(Device * self, char * label,
     } else {
         self->volume_time = g_strdup(timestamp);
     }
-    strncpy(rval->datestamp, self->volume_time, sizeof(rval->datestamp));
-    strncpy(rval->name, label, sizeof(rval->name));
+    g_strlcpy(rval->datestamp, self->volume_time, sizeof(rval->datestamp));
+    g_strlcpy(rval->name, label, sizeof(rval->name));
 
     return rval;
 }
@@ -661,7 +667,7 @@ dumpfile_t * make_tapeend_header(void) {
     rval = malloc(sizeof(*rval));
     rval->type = F_TAPEEND;
     timestamp = get_timestamp_from_time(time(NULL));
-    strncpy(rval->datestamp, timestamp, sizeof(rval->datestamp));
+    g_strlcpy(rval->datestamp, timestamp, sizeof(rval->datestamp));
     amfree(timestamp);
     return rval;
 }
@@ -881,8 +887,12 @@ property_set_block_size_fn(
 
     g_assert(block_size >= 0); /* int -> gsize (unsigned) */
     if ((gsize)block_size < self->min_block_size
-       || (gsize)block_size > self->max_block_size)
+       || (gsize)block_size > self->max_block_size) {
+	device_set_error(self,
+	    g_strdup_printf("Error setting BLOCK-SIZE property to '%zu', it must be between %zu and %zu", (gsize)block_size, self->min_block_size, self->max_block_size),
+	    DEVICE_STATUS_DEVICE_ERROR);
 	return FALSE;
+    }
 
     self->block_size = block_size;
     self->block_size_surety = surety;
@@ -1110,6 +1120,46 @@ device_finish (Device * self) {
     klass = DEVICE_GET_CLASS(self);
     g_assert(klass->finish);
     return (klass->finish)(self);
+}
+
+guint64
+device_get_bytes_read (Device * self) {
+    DeviceClass *klass;
+    guint64 bytes = 0;
+
+    g_assert(IS_DEVICE (self));
+
+    g_mutex_lock(self->device_mutex);
+    if (self->in_file) {
+	klass = DEVICE_GET_CLASS(self);
+	if (klass->get_bytes_read) {
+	    bytes = (klass->get_bytes_read)(self);
+	} else {
+	    bytes = self->bytes_read;
+	}
+    }
+    g_mutex_unlock(self->device_mutex);
+    return bytes;
+}
+
+guint64
+device_get_bytes_written (Device * self) {
+    DeviceClass *klass;
+    guint64 bytes = 0;
+
+    g_assert(IS_DEVICE (self));
+
+    g_mutex_lock(self->device_mutex);
+    if (self->in_file) {
+	klass = DEVICE_GET_CLASS(self);
+	if (klass->get_bytes_written) {
+	    bytes = (klass->get_bytes_written)(self);
+	} else {
+	    bytes = self->bytes_written;
+	}
+    }
+    g_mutex_unlock(self->device_mutex);
+    return bytes;
 }
 
 gboolean
@@ -1368,53 +1418,60 @@ device_listen(
     }
 }
 
-gboolean
+int
 device_accept(
     Device *self,
     DirectTCPConnection **conn,
-    ProlongProc prolong,
-    gpointer prolong_data)
+    int    *cancelled,
+    GMutex *abort_mutex,
+    GCond  *abort_cond)
 {
     DeviceClass *klass;
 
     klass = DEVICE_GET_CLASS(self);
     if(klass->accept) {
-	return (klass->accept)(self, conn, prolong, prolong_data);
+	return (klass->accept)(self, conn, cancelled, abort_mutex, abort_cond);
     } else {
 	device_set_error(self,
-	    stralloc(_("Unimplemented method")),
+	    g_strdup(_("Unimplemented method")),
 	    DEVICE_STATUS_DEVICE_ERROR);
-	return FALSE;
+	return 1;
     }
 }
 
-gboolean
+
+int
 device_connect(
     Device *self,
     gboolean for_writing,
     DirectTCPAddr *addrs,
     DirectTCPConnection **conn,
-    ProlongProc prolong,
-    gpointer prolong_data)
+    int    *cancelled,
+    GMutex *abort_mutex,
+    GCond  *abort_cond)
 {
     DeviceClass *klass;
 
     klass = DEVICE_GET_CLASS(self);
     if(klass->connect) {
-	return (klass->connect)(self, for_writing, addrs, conn, prolong, prolong_data);
+	return (klass->connect)(self, for_writing, addrs, conn, cancelled,
+				abort_mutex, abort_cond);
     } else {
 	device_set_error(self,
-	    stralloc(_("Unimplemented method")),
+	    g_strdup(_("Unimplemented method")),
 	    DEVICE_STATUS_DEVICE_ERROR);
-	return FALSE;
+	return 1;
     }
 }
 
-gboolean
+int
 device_write_from_connection(
     Device *self,
     guint64 size,
-    guint64 *actual_size)
+    guint64 *actual_size,
+    int    *cancelled,
+    GMutex *abort_mutex,
+    GCond  *abort_cond)
 {
     DeviceClass *klass;
 
@@ -1424,20 +1481,25 @@ device_write_from_connection(
     g_assert(IS_WRITABLE_ACCESS_MODE(self->access_mode));
 
     if(klass->write_from_connection) {
-	return (klass->write_from_connection)(self, size, actual_size);
+	return (klass->write_from_connection)(self, size, actual_size,
+					      cancelled,
+					      abort_mutex, abort_cond);
     } else {
 	device_set_error(self,
 	    stralloc(_("Unimplemented method")),
 	    DEVICE_STATUS_DEVICE_ERROR);
-	return FALSE;
+	return 1;
     }
 }
 
-gboolean
+int
 device_read_to_connection(
     Device *self,
     guint64 size,
-    guint64 *actual_size)
+    guint64 *actual_size,
+    int    *cancelled,
+    GMutex *abort_mutex,
+    GCond  *abort_cond)
 {
     DeviceClass *klass;
 
@@ -1446,12 +1508,13 @@ device_read_to_connection(
 
     klass = DEVICE_GET_CLASS(self);
     if(klass->read_to_connection) {
-	return (klass->read_to_connection)(self, size, actual_size);
+	return (klass->read_to_connection)(self, size, actual_size,
+					   cancelled, abort_mutex, abort_cond);
     } else {
 	device_set_error(self,
 	    stralloc(_("Unimplemented method")),
 	    DEVICE_STATUS_DEVICE_ERROR);
-	return FALSE;
+	return 1;
     }
 }
 
@@ -1473,6 +1536,13 @@ device_use_connection(
 	    DEVICE_STATUS_DEVICE_ERROR);
 	return FALSE;
     }
+}
+
+gboolean
+device_allow_take_scribe_from(
+    Device *self)
+{
+    return self->allow_take_scribe_from;
 }
 
 /* Property handling */

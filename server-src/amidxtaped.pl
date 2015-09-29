@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -403,6 +404,7 @@ sub make_plan {
 
 	return Amanda::Recovery::Planner::make_plan(
 	    filelist => $filelist,
+	    chg => $chg,
 	    $spec? (dumpspec => $spec) : (),
 	    plan_cb => sub { $self->plan_cb(@_); });
     }
@@ -514,7 +516,7 @@ sub xfer_src_cb {
 	if ($header->{'srv_encrypt'}) {
 	    push @filters,
 		Amanda::Xfer::Filter::Process->new(
-		    [ $header->{'srv_encrypt'}, $header->{'srv_decrypt_opt'} ], 0);
+		    [ $header->{'srv_encrypt'}, $header->{'srv_decrypt_opt'} ], 0, 0, 0, 1);
 	    $header->{'encrypted'} = 0;
 	    $header->{'srv_encrypt'} = '';
 	    $header->{'srv_decrypt_opt'} = '';
@@ -526,7 +528,7 @@ sub xfer_src_cb {
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
 		        [ $header->{'clnt_encrypt'},
-			  $header->{'clnt_decrypt_opt'} ], 0);
+			  $header->{'clnt_decrypt_opt'} ], 0, 0, 0, 1);
 		$header->{'encrypted'} = 0;
 		$header->{'srv_encrypt'} = '';
 		$header->{'srv_decrypt_opt'} = '';
@@ -546,13 +548,12 @@ sub xfer_src_cb {
     if ($header->{'compressed'}) {
 	# need to uncompress this file
 	debug("..with decompression applied");
-	my $dle = $header->get_dle();
 
 	if ($header->{'srvcompprog'}) {
 	    # TODO: this assumes that srvcompprog takes "-d" to decrypt
 	    push @filters,
 		Amanda::Xfer::Filter::Process->new(
-		    [ $header->{'srvcompprog'}, "-d" ], 0);
+		    [ $header->{'srvcompprog'}, "-d" ], 0, 0, 0, 1);
 	    # adjust the header
 	    $header->{'compressed'} = 0;
 	    $header->{'uncompress_cmd'} = '';
@@ -562,20 +563,22 @@ sub xfer_src_cb {
 		# TODO: this assumes that clntcompprog takes "-d" to decrypt
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $header->{'clntcompprog'}, "-d" ], 0);
+			[ $header->{'clntcompprog'}, "-d" ], 0, 0, 0, 1);
 		# adjust the header
 		$header->{'compressed'} = 0;
 		$header->{'uncompress_cmd'} = '';
 		$header->{'clntcompprog'} = '';
 	    }
 	} else {
-	    if (!$self->{'their_features'}->has($Amanda::Feature::fe_amrecover_receive_unfiltered) ||
-		$dle->{'compress'} == $Amanda::Config::COMP_SERVER_FAST ||
-		$dle->{'compress'} == $Amanda::Config::COMP_SERVER_BEST) {
+	    my $dle = $header->get_dle();
+	    if ($dle &&
+		(!$self->{'their_features'}->has($Amanda::Feature::fe_amrecover_receive_unfiltered) ||
+		 $dle->{'compress'} == $Amanda::Config::COMP_SERVER_FAST ||
+		 $dle->{'compress'} == $Amanda::Config::COMP_SERVER_BEST)) {
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
 			[ $Amanda::Constants::UNCOMPRESS_PATH,
-			  $Amanda::Constants::UNCOMPRESS_OPT ], 0);
+			  $Amanda::Constants::UNCOMPRESS_OPT ], 0, 0, 0, 1);
 		# adjust the header
 		$header->{'compressed'} = 0;
 		$header->{'uncompress_cmd'} = '';
@@ -601,6 +604,10 @@ sub send_header {
     # filter out some things the remote might not be able to process
     if (!$self->{'their_features'}->has($Amanda::Feature::fe_amrecover_dle_in_header)) {
 	$header->{'dle_str'} = undef;
+    } else {
+	$header->{'dle_str'} =
+	    Amanda::Disklist::clean_dle_str_for_client($header->{'dle_str'},
+		   Amanda::Feature::am_features($self->{'their_features'}));
     }
     if (!$self->{'their_features'}->has($Amanda::Feature::fe_amrecover_origsize_in_header)) {
 	$header->{'orig_size'} = 0;
@@ -820,7 +827,7 @@ sub check_inetd_security {
 	return 0;
     }
 
-    my $errmsg = $self->check_bsd_security($stream, $1);
+    my $errmsg = $self->check_bsd_security($stream, $1, "amidxtaped");
     if ($errmsg) {
 	print "ERROR $errmsg\r\n";
 	return 0;
@@ -883,7 +890,8 @@ sub getline {
 	last if $c eq "\n";
     }
 
-    my $chopped = $line;
+    $line =~ /^(.*)$/;
+    my $chopped = $1;
     $chopped =~ s/[\r\n]*$//g;
     debug("CTL << $chopped");
 
@@ -907,8 +915,8 @@ sub getline_async {
 	return $async_read_cb->($err, undef) if $err;
 
 	$buf .= $data;
-	if ($buf =~ /\r\n$/) {
-	    my $chopped = $buf;
+	if ($buf =~ /^(.*\r\n)$/) {
+	    my $chopped = $1;
 	    $chopped =~ s/[\r\n]*$//g;
 	    debug("CTL << $chopped");
 

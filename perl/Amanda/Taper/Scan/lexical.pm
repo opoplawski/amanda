@@ -1,8 +1,9 @@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -64,6 +65,7 @@ sub new {
 	return Amanda::Taper::Scan::traditional->new(%params);
     }
     my $self = Amanda::ScanInventory->new(%params);
+    $self->{'handled-error'} = {};
     return bless ($self, $class);
 }
 
@@ -109,6 +111,7 @@ sub last_use_label {
     my $self = shift;
 
     my $tles = $self->{'tapelist'}->{tles};
+    return undef if !defined $tles->[0];
     my $label = $tles->[0]->{'label'};
 }
 
@@ -124,12 +127,15 @@ sub analyze {
     my $first_new_volume;
     my $new_volume;
     my @new_volume;
+    my $first_error;
+    my $new_error;
+    my @new_error;
     my $first_unknown;
     my $unknown;
     my $current;
     my $label = $self->most_prefered();
     $self->{'most_prefered_label'} = $label;
-
+    $self->{'new-error'}= {};
     for my $i (0..(scalar(@$inventory)-1)) {
 	my $sl = $inventory->[$i];
 	if ($sl->{current}) {
@@ -149,27 +155,39 @@ sub analyze {
 		push @reusable, $sl;
 	    } else {
 		my $vol_tle = $self->{'tapelist'}->lookup_tapelabel($sl->{'label'});
-		if ($vol_tle) {
+		if ($vol_tle && $sl->{'label'} =~ /$self->{'labelstr'}/) {
 		    if ($vol_tle->{'datestamp'} eq '0') {
 			push @new_labeled, $sl;
 		    }
-		} elsif ($self->{'chg'}->volume_is_labelable($sl->{'device_status'},
-							     $sl->{'f_type'},
-							     $sl->{'label'})) {
+		} elsif ($self->volume_is_labelable($sl)) {
+		    $sl->{'label'} = $self->{'chg'}->make_new_tape_label(
+					barcode => $sl->{'barcode'},
+					slot => $sl->{'slot'},
+					meta => $sl->{'meta'});
 		    $first_new_volume = $sl if !$first_new_volume;
 		    $new_volume = $sl if $current && !$new_volume;
 		    push @new_volume, $sl;
 		}
 	    }
-	} elsif ($self->{'chg'}->volume_is_labelable($sl->{'device_status'},
-						     $sl->{'f_type'},
-						     $sl->{'label'})) {
+	} elsif ($self->volume_is_labelable($sl)) {
+	    $sl->{'label'} = $self->{'chg'}->make_new_tape_label(
+					barcode => $sl->{'barcode'},
+					slot => $sl->{'slot'},
+					meta => $sl->{'meta'});
 	    $first_new_volume = $sl if !$first_new_volume;
 	    $new_volume = $sl if $current && !$new_volume;
 	    push @new_volume, $sl;
 	} elsif (!defined($sl->{device_status}) && !defined($sl->{label})) {
 	    $first_unknown = $sl if !$first_unknown;
 	    $unknown = $sl if $current && !$unknown;
+	} elsif (defined($sl->{device_status}) and
+		 ($sl->{'device_status'} & $DEVICE_STATUS_DEVICE_ERROR or
+		  $sl->{'device_status'} & $DEVICE_STATUS_VOLUME_ERROR) and
+		 not exists $self->{'handled-error'}->{$sl->{'device_error'}} and
+		 not exists $self->{'new_error'}->{$sl->{'device_error'}}) {
+	    $first_error = $sl if !$first_error;
+	    $new_error = $sl if $current && !$new_error;
+	    $self->{'slot-error-message'} = $new_error->{'device_error'};
 	} else {
 	}
     }
@@ -207,10 +225,6 @@ sub analyze {
     }
 
     for my $sl (@new_volume) {
-	$sl->{'label'} = $self->{'chg'}->make_new_tape_label(
-					barcode => $sl->{'barcode'},
-					slot => $sl->{'slot'},
-					meta => $sl->{'meta'});
 	$new_volume = $sl if defined $last_label and
 			     $new_volume->{'label'} ne $sl->{'label'} and
 			     (($sl->{'label'} gt $last_label and
@@ -260,6 +274,9 @@ sub analyze {
 	$use = $new_labeled;
     } elsif ($new_volume and $self->{'scan_conf'}->{'new_volume'} eq 'last') {
 	$use = $new_volume;
+    } elsif ($new_error) {
+	$use = $new_error;
+	$self->{'handled-error'}->{$new_error->{'device_error'}} = 1;
     }
 
     if ($use) {

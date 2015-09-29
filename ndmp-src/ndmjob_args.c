@@ -54,8 +54,8 @@ char *help_text[] = {
 	"  -o init-labels -- init media labels",
 #endif /* !NDMOS_OPTION_NO_CONTROL_AGENT */
 #ifndef NDMOS_EFFECT_NO_SERVER_AGENTS
-	"  -o daemon      -- launch session for incomming connections",
-	"  -o test-daemon -- launch session for incomming connections, exit when stdin is closed",
+	"  -o daemon      -- launch session for incoming connections",
+	"  -o test-daemon -- launch session for incoming connections, exit when stdin is closed",
 	"  -o tape-size=SIZE -- specify the length, in bytes of the simulated tape",
 #endif /* !NDMOS_EFFECT_NO_SERVER_AGENTS */
 #ifndef NDMOS_OPTION_NO_CONTROL_AGENT
@@ -117,6 +117,7 @@ char *help_text[] = {
 	"  -o use-eject=N",
 	"           -- use eject when unloading tapes (default 0)",
         "  -o tape-tcp=hostname:port -- send the data directly to that tcp port.",
+        "  -o D-agent-fd=<fd> -- file descriptor to read the -D agent.",
 	"CONTROL of ROBOT agent parameters",
 	"  -R AGENT -- robot agent if different than -T (see AGENT below)",
 	"  -m MEDIA -- add entry to media table (see below)",
@@ -149,10 +150,11 @@ process_args (int argc, char *argv[])
 	char **		pp;
 	char *		p;
 	char *		op;
-	char *		av[1000];
+	char **		av;
 	int		ac = 0;
 
 	progname = argv[0];
+	av = malloc((argc+1000) * sizeof(char *));
 
 	if (argc == 2 && strcmp (argv[1], "-help") == 0) {
 		help();
@@ -660,6 +662,23 @@ handle_long_option (char *str)
 		o_config_file = value;
 	} else if (strcmp (name, "tape-tcp") == 0 && value) {
 		o_tape_tcp = value;
+	} else if (strcmp (name, "D-agent-fd") == 0 && value) {
+		char d_agent[1025];
+		int fd = atoi(value);
+		int size;
+
+		if (AGENT_GIVEN(D_data_agent)) {
+			error_byebye ("more than one of -D or -D-agent-fd");
+		}
+
+		size = full_read(fd, d_agent, 1024);
+		d_agent[size] = '\0';
+		if (size > 0 && d_agent[size-1] == '\n')
+		    d_agent[size-1] = '\0';
+		close(fd);
+		if (ndmagent_from_str (&D_data_agent, d_agent)) {
+			error_byebye ("bad -D-agent-fd argument");
+		}
 	} else if (strcmp (name, "tape-limit") == 0) {
 		if (!value) {
 			error_byebye ("tape-limit argument is required");

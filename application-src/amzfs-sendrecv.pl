@@ -1,9 +1,10 @@
 #!@PERL@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -102,7 +103,8 @@ sub command_support {
 sub command_selfcheck {
     my $self = shift;
 
-    $self->print_to_server("disk " . quote_string($self->{disk}));
+    $self->print_to_server("disk " . quote_string($self->{disk}),
+			   $Amanda::Script_App::GOOD);
 
     $self->print_to_server("amzfs-sendrecv version " . $Amanda::Constants::VERSION,
 			   $Amanda::Script_App::GOOD);
@@ -291,7 +293,7 @@ sub estimate_snapshot
     }
     if ($level == 0) {
 	my $compratio = $self->get_compratio();
-	chop($compratio);
+	$compratio =~ s/x$//;
 	$msg *= $compratio;
     }
 
@@ -310,7 +312,9 @@ sub get_compratio
     $pid = open3($wtr, $rdr, $err, $cmd);
     close $wtr;
     my ($msg) = <$rdr>;
+    chomp($msg) if defined $msg;
     my ($errmsg) = <$err>;
+    chomp($errmsg) if defined $errmsg;
     waitpid $pid, 0;
     close $rdr;
     close $err;

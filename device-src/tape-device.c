@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -141,6 +142,7 @@ gboolean tape_setcompression(int fd, gboolean on);
 gboolean tape_offl(int fd);
 
 DeviceStatusFlags tape_is_tape_device(int fd);
+DeviceStatusFlags get_tape_blocksize(int fd, guint64 *tape_blocksize);
 DeviceStatusFlags tape_is_ready(int fd, TapeDevice *t_self);
 
 #define tape_device_read_size(self) \
@@ -578,6 +580,9 @@ tape_device_set_compression_fn(Device *p_self, DevicePropertyBase *base,
 	/* looks good .. let's start the device over, though */
 	device_clear_volume_details(p_self);
     } else {
+	device_set_error(p_self,
+	    g_strdup("Error setting COMPRESSION property"),
+	    DEVICE_STATUS_DEVICE_ERROR);
 	return FALSE;
     }
 
@@ -602,8 +607,12 @@ tape_device_set_read_block_size_fn(Device *p_self, DevicePropertyBase *base G_GN
 
     if (read_block_size != 0 &&
 	    ((gsize)read_block_size < p_self->block_size ||
-	     (gsize)read_block_size > p_self->max_block_size))
+	     (gsize)read_block_size > p_self->max_block_size)) {
+	device_set_error(p_self,
+	    g_strdup_printf("Error setting READ-BLOCk-SIZE property to '%u', it must be between %zu and %zu", read_block_size, p_self->block_size, p_self->max_block_size),
+	    DEVICE_STATUS_DEVICE_ERROR);
 	return FALSE;
+    }
 
     self->private->read_block_size = read_block_size;
 
@@ -677,6 +686,7 @@ static int try_open_tape_device(TapeDevice * self, char * device_filename) {
     int fd;
     int save_errno;
     DeviceStatusFlags new_status;
+    guint64 tape_blocksize;
 
 #ifdef O_NONBLOCK
     int nonblocking = 0;
@@ -773,6 +783,31 @@ static int try_open_tape_device(TapeDevice * self, char * device_filename) {
 	    new_status);
         robust_close(fd);
         return -1;
+    }
+
+    new_status = get_tape_blocksize(fd, &tape_blocksize);
+    if (new_status != DEVICE_STATUS_SUCCESS) {
+	device_set_error(DEVICE(self),
+	    g_strdup_printf(_("Can't get the blocksize of the device %s"),
+			 self->private->device_filename),
+	    new_status);
+        robust_close(fd);
+        return -1;
+    }
+    if (tape_blocksize > 0 && tape_blocksize != tape_device_read_size(self)) {
+	device_set_error(DEVICE(self),
+	    g_strdup_printf(_("Device %s use fixed block size of %lld and tapetype use %lld"), 
+			 self->private->device_filename,
+			 (long long)tape_blocksize,
+			 (long long)tape_device_read_size(self)),
+	    DEVICE_STATUS_VOLUME_ERROR|DEVICE_STATUS_DEVICE_ERROR);
+        robust_close(fd);
+        return -1;
+    }
+    if (tape_blocksize == 0) {
+	g_debug("Device is in variable block size");
+    } else {
+	g_debug("Device is in fixed block size of %lld", (long long)tape_blocksize);
     }
 
     return fd;
@@ -878,7 +913,14 @@ static DeviceStatusFlags tape_device_read_label(Device * dself) {
     }
 
     buffer_len = tape_device_read_size(self);
-    header_buffer = malloc(buffer_len);
+    header_buffer = g_try_malloc(buffer_len);
+    if (header_buffer == NULL) {
+	device_set_error(dself,
+	    g_strdup(_("Failed to allocate memory")),
+	      DEVICE_STATUS_DEVICE_ERROR
+	    | DEVICE_STATUS_VOLUME_ERROR);
+        return dself->status;
+    }
     result = tape_device_robust_read(self, header_buffer, &buffer_len, &msg);
 
     if (result != RESULT_SUCCESS) {
@@ -919,6 +961,14 @@ static DeviceStatusFlags tape_device_read_label(Device * dself) {
 	return dself->status;
     }
 
+    if (buffer_len < 32768) {
+	device_set_error(dself,
+		g_strdup_printf(_("header is too small: %d bytes"), buffer_len),
+		DEVICE_STATUS_DEVICE_ERROR | DEVICE_STATUS_VOLUME_ERROR);
+	free(header_buffer);
+        return dself->status;
+    }
+
     dself->header_block_size = buffer_len;
     header = dself->volume_header = g_new(dumpfile_t, 1);
     fh_init(header);
@@ -956,7 +1006,13 @@ tape_device_write_block(Device * pself, guint size, gpointer data) {
     /* zero out to the end of a short block -- tape devices only write
      * whole blocks. */
     if (size < pself->block_size) {
-        replacement_buffer = malloc(pself->block_size);
+        replacement_buffer = g_try_malloc(pself->block_size);
+	if (replacement_buffer == NULL) {
+	    device_set_error(pself,
+		g_strdup(_("failed to allocate memory")),
+		DEVICE_STATUS_DEVICE_ERROR);
+	    return FALSE;
+	}
         memcpy(replacement_buffer, data, size);
         bzero(replacement_buffer+size, pself->block_size-size);
 
@@ -989,6 +1045,9 @@ tape_device_write_block(Device * pself, guint size, gpointer data) {
     }
 
     pself->block++;
+    g_mutex_lock(pself->device_mutex);
+    pself->bytes_written += size;
+    g_mutex_unlock(pself->device_mutex);
 
     return TRUE;
 }
@@ -1019,6 +1078,9 @@ static int tape_device_read_block (Device * pself, gpointer buf,
     case RESULT_SUCCESS:
         *size_req = size;
         pself->block++;
+	g_mutex_lock(pself->device_mutex);
+	pself->bytes_read += size;
+	g_mutex_unlock(pself->device_mutex);
         return size;
     case RESULT_SMALL_BUFFER: {
         gsize new_size;
@@ -1053,7 +1115,9 @@ static int tape_device_read_block (Device * pself, gpointer buf,
     }
     case RESULT_NO_DATA:
         pself->is_eof = TRUE;
+	g_mutex_lock(pself->device_mutex);
 	pself->in_file = FALSE;
+	g_mutex_unlock(pself->device_mutex);
 	device_set_error(pself,
 	    stralloc(_("EOF")),
 	    DEVICE_STATUS_SUCCESS);
@@ -1154,7 +1218,9 @@ tape_device_start (Device * d_self, DeviceAccessMode mode, char * label,
     }
 
     d_self->access_mode = mode;
+    g_mutex_lock(d_self->device_mutex);
     d_self->in_file = FALSE;
+    g_mutex_unlock(d_self->device_mutex);
 
     if (IS_WRITABLE_ACCESS_MODE(mode)) {
         if (self->write_open_errno != 0) {
@@ -1266,10 +1332,13 @@ static gboolean tape_device_start_file(Device * d_self,
     amfree(amanda_header);
 
     /* arrange the file numbers correctly */
-    d_self->in_file = TRUE;
     d_self->block = 0;
     if (d_self->file >= 0)
         d_self->file ++;
+    g_mutex_lock(d_self->device_mutex);
+    d_self->in_file = TRUE;
+    d_self->bytes_written = 0;
+    g_mutex_unlock(d_self->device_mutex);
     return TRUE;
 }
 
@@ -1278,6 +1347,14 @@ tape_device_finish_file (Device * d_self) {
     TapeDevice * self;
 
     self = TAPE_DEVICE(d_self);
+
+    if (!d_self->in_file)
+	return TRUE;
+
+    g_mutex_lock(d_self->device_mutex);
+    d_self->in_file = FALSE;
+    g_mutex_unlock(d_self->device_mutex);
+
     if (device_in_error(d_self)) return FALSE;
 
     if (!tape_weof(self->fd, 1)) {
@@ -1289,7 +1366,6 @@ tape_device_finish_file (Device * d_self) {
         return FALSE;
     }
 
-    d_self->in_file = FALSE;
     return TRUE;
 }
 
@@ -1317,9 +1393,12 @@ tape_device_seek_file (Device * d_self, guint file) {
         difference --;
     }
 
-    d_self->in_file = FALSE;
     d_self->is_eof = FALSE;
     d_self->block = 0;
+    g_mutex_lock(d_self->device_mutex);
+    d_self->in_file = FALSE;
+    d_self->bytes_read = 0;
+    g_mutex_unlock(d_self->device_mutex);
 
 reseek:
     if (difference > 0) {
@@ -1387,7 +1466,14 @@ reseek:
     }
 
     buffer_len = tape_device_read_size(d_self);
-    header_buffer = malloc(buffer_len);
+    header_buffer = g_try_malloc(buffer_len);
+    if (header_buffer == NULL) {
+	device_set_error(d_self,
+		g_strdup(_("failed to allocate memory")),
+		DEVICE_STATUS_DEVICE_ERROR);
+	return NULL;
+    }
+
     d_self->is_eof = FALSE;
     result = tape_device_robust_read(self, header_buffer, &buffer_len, &msg);
 
@@ -1419,6 +1505,14 @@ reseek:
         return NULL;
     }
 
+    if (buffer_len < 32768) {
+	device_set_error(d_self,
+		g_strdup_printf(_("header is too small: %d bytes"), buffer_len),
+		DEVICE_STATUS_DEVICE_ERROR | DEVICE_STATUS_VOLUME_ERROR);
+	free(header_buffer);
+	return NULL;
+    }
+
     rval = g_new(dumpfile_t, 1);
     parse_file_header(header_buffer, rval, buffer_len);
     amfree(header_buffer);
@@ -1446,7 +1540,9 @@ reseek:
         return NULL;
     }
 
+    g_mutex_lock(d_self->device_mutex);
     d_self->in_file = TRUE;
+    g_mutex_unlock(d_self->device_mutex);
     d_self->file = file;
 
     return rval;
@@ -1540,9 +1636,14 @@ tape_device_finish (Device * d_self) {
     }
 
     /* Polish off this file, if relevant. */
+    g_mutex_lock(d_self->device_mutex);
     if (d_self->in_file && IS_WRITABLE_ACCESS_MODE(d_self->access_mode)) {
-        if (!device_finish_file(d_self))
+	g_mutex_unlock(d_self->device_mutex);
+        if (!device_finish_file(d_self)) {
 	    goto finish_error;
+	}
+    } else {
+	g_mutex_unlock(d_self->device_mutex);
     }
 
     /* Straighten out the filemarks.  We already wrote one in finish_file, and
@@ -1744,7 +1845,7 @@ tape_device_robust_write (TapeDevice * self, void * buf, int count, char **errms
 #endif
 	) {
 	    /* if we've retried once already, then we're probably really out of space */
-	    if (retry)
+	    if (retry || !self->leom)
 		return RESULT_NO_SPACE;
 	    retry = TRUE;
 	    d_self->is_eom = TRUE;
@@ -2138,6 +2239,32 @@ DeviceStatusFlags tape_is_tape_device(int fd) {
 	    return DEVICE_STATUS_DEVICE_ERROR;
 	}
     }
+}
+
+DeviceStatusFlags get_tape_blocksize(int fd, guint64 *tape_blocksize) {
+   struct mtget status;
+
+   if (ioctl(fd, MTIOCGET, (char *)&status) < 0) {
+	g_debug("get_tape_blocksize: ioctl(MTIOCGET) failed: %s",
+		strerror(errno));
+	*tape_blocksize = -1;
+	return DEVICE_STATUS_DEVICE_ERROR;
+    }
+
+    *tape_blocksize = 0;
+#if defined MT_ST_BLKSIZE_MASK && defined MT_ST_BLKSIZE_SHIFT
+    if (
+#ifdef MT_ISSCSI1
+	status.mt_type == MT_ISSCSI1 ||
+#endif
+#ifdef MT_ISSCSI2
+	status.mt_type == MT_ISSCSI2 ||
+#endif
+	0) {
+	*tape_blocksize = ((status.mt_dsreg & MT_ST_BLKSIZE_MASK) >> MT_ST_BLKSIZE_SHIFT);
+    }
+#endif
+    return DEVICE_STATUS_SUCCESS;
 }
 
 DeviceStatusFlags tape_is_ready(int fd, TapeDevice *t_self G_GNUC_UNUSED) {

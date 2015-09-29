@@ -1,10 +1,11 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
- * Copyright (c) 2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -20,6 +21,7 @@
  */
 
 #include "amanda.h"
+#include "util.h"
 #include "xfer-server.h"
 #include "xfer-device.h"
 
@@ -49,6 +51,7 @@ typedef struct XferSourceHolding {
 
     int fd;
     char *next_filename;
+    guint64 bytes_read;
 
     XferElement *dest_taper;
 } XferSourceHolding;
@@ -150,12 +153,16 @@ start_new_chunk(
     hdrbuf = NULL;
 
     if (hdr.type != F_DUMPFILE && hdr.type != F_CONT_DUMPFILE) {
-	dumpfile_free_data(&hdr);
-	xfer_cancel_with_error(XFER_ELEMENT(self),
-	    "unexpected header type %d in holding file '%s'",
-	    hdr.type, self->next_filename);
-	wait_until_xfer_cancelled(XFER_ELEMENT(self)->xfer);
-	return FALSE;
+	if (hdr.type == F_SPLIT_DUMPFILE) {
+	    g_debug("Reading a SPLIT_DUMPFILE) from holding disk");
+	} else {
+	    dumpfile_free_data(&hdr);
+	    xfer_cancel_with_error(XFER_ELEMENT(self),
+		"unexpected header type %d in holding file '%s'",
+		hdr.type, self->next_filename);
+	    wait_until_xfer_cancelled(XFER_ELEMENT(self)->xfer);
+	    return FALSE;
+	}
     }
 
     g_free(self->next_filename);
@@ -195,6 +202,8 @@ pull_buffer_impl(
 	bytes_read = full_read(self->fd, buf, HOLDING_BLOCK_SIZE);
 	if (bytes_read > 0) {
 	    *size = bytes_read;
+	    self->bytes_read += bytes_read;
+	    crc32_add((uint8_t *)buf, bytes_read, &elt->crc);
 	    return buf;
 	}
 
@@ -211,6 +220,8 @@ pull_buffer_impl(
     }
 
 return_eof:
+    g_debug("xfer-source-holding CRC: %08x:%lld",
+	    crc32_finish(&elt->crc), (long long)elt->crc.size);
     g_free(buf);
     *size = 0;
     return NULL;
@@ -224,6 +235,8 @@ instance_init(
 
     elt->can_generate_eof = TRUE;
     self->fd = -1;
+    make_crc_table();
+    crc32_init(&elt->crc);
 }
 
 static void
@@ -296,7 +309,17 @@ xfer_source_holding(
     XferElement *elt = XFER_ELEMENT(self);
 
     self->next_filename = g_strdup(filename);
+    self->bytes_read = 0;
 
     return elt;
+}
+
+guint64
+xfer_source_holding_get_bytes_read(
+    XferElement *elt)
+{
+    XferSourceHolding *self = (XferSourceHolding *)elt;
+
+    return self->bytes_read;
 }
 

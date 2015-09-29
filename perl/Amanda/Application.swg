@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -31,6 +32,7 @@ require Amanda::Script_App;
 
 use strict;
 use warnings;
+use IO::Handle;
 use Amanda::Config qw( :init :getconf  config_dir_relative );
 
 
@@ -42,6 +44,7 @@ sub new {
 
     $self->{known_commands} = {
         support   => 1,
+        discover  => 1,
         selfcheck => 1,
         estimate  => 1,
         backup    => 1,
@@ -90,9 +93,10 @@ sub read_magic_block {
 sub _set_mesgout {
     my $self = shift;
 
-    my $mesgout_fd;
-    open ($mesgout_fd, '>&=3') || die("Can't open mesgout_fd: $!");
-    $self->{mesgout} = $mesgout_fd;
+    my $mesgout = IO::Handle->new();
+    $mesgout->fdopen(3,"a") || die("Can't open mesgout_fd: $!");
+    $mesgout->autoflush(1);
+    $self->{mesgout} = $mesgout;
 }
 
 %}

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -74,6 +75,12 @@ time_t get_time_from_timestamp(char *timestamp)
     struct tm tm;
     char t[5];
     time_t tt;
+    tm.tm_year = 0;
+    tm.tm_mon = 0;
+    tm.tm_mday = 1;
+    tm.tm_hour = 0;
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
 
     if (strlen(timestamp) >= 4) {
 	memcpy(t, timestamp, 4);

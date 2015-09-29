@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -165,7 +166,7 @@ from device to device.
 In addition to the status bitfield, a Device also provides a
 user-comprehensible error message, available from the methods C<error>
 (returning the error message), C<status_error> (returning the string form of
-the status), or C<status_or_error> (returning the error message if one is set,
+the status), or C<error_or_status> (returning the error message if one is set,
 otherwise the string form of the status). None of these functions will ever
 return C<undef>.
 

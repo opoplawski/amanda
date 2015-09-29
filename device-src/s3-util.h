@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -120,4 +121,23 @@ s3_hex_encode(const GByteArray *to_enc);
 GByteArray*
 s3_compute_md5_hash(const GByteArray *to_hash);
 
+char *
+s3_compute_sha256_hash_ba(const GByteArray *to_hash);
+char *
+s3_compute_sha256_hash(const unsigned char *to_hash, int len);
+
+char *
+s3_uri_encode(const char *s, gboolean encodeSlash);
+
+unsigned char *
+EncodeHMACSHA256(
+    unsigned char* key,
+    int keylen,
+    const char* data,
+    int datalen);
+
+unsigned char *
+s3_tohex(unsigned char *s, int len_s);
+
 #endif
+

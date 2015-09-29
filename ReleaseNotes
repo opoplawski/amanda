@@ -1,3 +1,130 @@
+		Release Notes for amanda-3.3.7
+
+* amvault
+    o new --no-interactivity argument.
+    o new --src-labelstr argument.
+* amdump
+    o compute crc32 of the streams and write them to the debug files.
+* chg-robot
+    o Add a BROKEN-DRIVE-LOADED-SLOT. property.
+* Many bugs fix.
+
+
+		Release Notes for amanda-3.3.6
+
+* ambsdtar
+    o new application that use BSD tar to do the backup.
+* Many bugs fix.
+
+
+		Release Notes for amanda-3.3.5
+
+* amtape
+    o faster 'verify' command.
+* fix parsing of config override arguments.
+* amsamba
+    o Add REGEX-MATCH property.
+* amvault
+    o Print progress status.
+* ndmp device
+    o INDIRECT property default to yes.
+* Many bugs fix.
+
+
+		Release Notes for amanda-3.3.4
+
+* amreport
+    o new --format argument
+    o new 'json' and 'json_raw' format.
+* amanda.conf
+    o new REPORT-FORMAT option.
+* amtape
+    o new 'verify' command.
+* amadmin
+    o new 'force-level-1' command.
+* ampgsql
+    o Add VERBOSE property.
+* S3 device
+    o handle DURABLE_REDUCED_AVAILABILITY for google storage.
+* Many bugs fix.
+
+
+		Release Notes for amanda-3.3.3
+
+* amdump.X log files use timestamp instead of number, amdump and amdump.1
+  are maintained as symlink.
+* chg-disk
+    o Use the changerfile for the statefile.
+* s3 device
+    o support CASTOR storage
+* amanda.conf
+    o New REPORT-USE-MEDIA and REPORT-NEXT-MEDIA.
+* amfetchdump
+    o new --extract, --directory, --data-path and --application-property
+      arguments. It allow to do the extraction on the server.
+* --exact-match argument to many command, and '=' prefix to expression.
+    o It diable use of expression for host, disk, level and datestamp on
+      command line argument.
+* All changer scripts.
+    o Add LOCK-TIMEOUT property.
+* Many bug fix.
+
+
+		Release Notes for amanda-3.3.2
+
+* amgtar
+    o New IGNORE-ZEROS property.
+* amsamba
+    o Fix use of subdir for restore.
+* s3 device
+    o New PROXY property.
+    o New PASSWORD, USERNAME, TENANT_ID, TENANT_NAME properties.
+    o New STORAGE_API property.
+    o New S3_MULTI_DELETE property
+    o New CLIENT_ID, CLIENT_SECRET and REFRESH_TOKEN properties.
+    o New CREATE-BUCKET property.
+    o New PROJECT-ID property.
+    o New REUSE-CONNECTION property.
+    o Works with swift and google storage.
+* NDMP device
+    o Add INDIRECT property.
+* amanda.conf
+    o Add 'max-warnings', The maximum number of warning lines in the report.
+    o Default 'columspec' changed to: HostName=0:-12:12,Disk=1:-11:11,Level=1:-1:1,OrigKB=1:-7:0,OutKB=1:-7:0,Compress=1:-6:1,DumpTime=1:-7:7,Dumprate=1:-6:1,TapeTime=1:-6:6,TapeRate=1:-6:1
+* amadmin
+    o Add --no-default and --print-source arguments for config and
+      disklist command.
+* amfetchdump
+    o Print progress.
+    o Add --decrypt, --no-decrypt, --server-decrypt, --client-decrypt,
+      --compress, --no-compress, --server-compress and --client-compress
+      options.
+* fix for compilation with newer glib.
+* fix for compilation on cigwin.
+* Many bug fix.
+
+
+		Release Notes for amanda-3.3.1
+
+* amrecover
+    o New 'settransalte' command.
+* amanda.conf
+    o new '$s' substitution in autolabel.
+    o new 'max-dle-by-volume' global option.
+    o new 'eject-volume' global option.
+* diskfile
+    o new 'includefile' option
+* amcheck
+    o new '--client-verbose' argument.
+* All programs have a new '--version' argument.
+* ampgsql can take property from server configuration.
+* amgetconf can print one property of a section.
+* s3 device
+    o new S3_SERVER_SIDE_ENCRYPTION property.
+    o use multiple thread to speedup deleting a volume.
+* Many bug fix.
+
+
 		Release Notes for amanda-3.3.0
 
 * The default auth is changed to "bsdtcp", if you are using the default bsd

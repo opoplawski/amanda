@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -304,6 +305,9 @@ amglue_export_ok(
 
 %perlcode %{
 
+use Amanda::Config qw ( :init :getconf config_dir_relative );
+use Amanda::Debug;
+
 sub find_all_logs
 {
     my $logdir = shift @_ || config_dir_relative(getconf($CNF_LOGDIR));
@@ -321,13 +325,9 @@ sub find_latest_log
     return $logs[-1];
 }
 
-use Amanda::Config;
-use Amanda::Debug;
-
 sub get_current_log_timestamp
 {
-    my $logfile = Amanda::Config::config_dir_relative(
-		Amanda::Config::getconf($Amanda::Config::CNF_LOGDIR)) . "/log";
+    my $logfile = config_dir_relative(getconf($CNF_LOGDIR)) . "/log";
     if (! -f $logfile) {
 	Amanda::Debug::warning("no current logfile '$logfile'");
 	return undef;

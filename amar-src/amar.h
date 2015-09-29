@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -18,6 +19,7 @@
  * Sunnyvale, CA 94085, USA, or: http://www.zmanda.com
  */
 
+#include "event.h"
 #include <glib.h>
 
 /* A note regarding error handling in this module.  Amar returns errors via the
@@ -51,6 +53,7 @@ enum {
     /* anything above this value can be used by the application */
     AMAR_ATTR_APP_START = 16,
     AMAR_ATTR_GENERIC_DATA = AMAR_ATTR_APP_START,
+    AMAR_ATTR_RMAN_DATA = 17
 };
 
 /* Create an object to read/write an amanda archive on the file descriptor fd.
@@ -63,6 +66,9 @@ amar_t *amar_new(int fd, mode_t mode, GError **error);
 /* Finish writing to this fd.  All buffers are flushed, but the file descriptor
  * is not closed -- the user must close it. */
 gboolean amar_close(amar_t *archive, GError **error);
+
+/* Return the size of the archive if opened in write mode */
+off_t amar_size(amar_t *archive);
 
 /* create a new 'file' object on the archive.  The filename is treated as a
  * binary blob, but if filename_len is zero, then its length will be calculated
@@ -85,6 +91,10 @@ amar_file_t *amar_new_file(
 	    off_t *header_offset,
 	    GError **error);
 
+/* return the size of the fil */
+off_t amar_file_size(
+	amar_file_t *file);
+
 /* Flush all buffer the 'file' object and write a record with ID=2 */
 gboolean amar_file_close(
 	    amar_file_t *file,
@@ -96,8 +106,12 @@ gboolean amar_file_close(
  */
 amar_attr_t *amar_new_attr(
 	    amar_file_t *file,
-	    uint16_t attrid,
+	    guint16  attrid,
 	    GError **error);
+
+/* return the size of the attribute */
+off_t amar_attr_size(
+	amar_attr_t *attribute);
 
 /* flush all buffers and mark the end of the attribute */
 gboolean amar_attr_close(
@@ -126,6 +140,16 @@ gboolean amar_attr_add_data_buffer(
  * @returns: number of bytes read from fd, or -1 on error
  */
 off_t amar_attr_add_data_fd(
+	    amar_attr_t *attribute,
+	    int fd,
+	    gboolean eoa,
+	    GError **error);
+
+/* Same but do it in a new thread
+ * Return immediately
+ * Caller should not use the archive, next call must be attr->close
+ */
+off_t amar_attr_add_data_fd_in_thread(
 	    amar_attr_t *attribute,
 	    int fd,
 	    gboolean eoa,
@@ -167,9 +191,9 @@ off_t amar_attr_add_data_fd(
  */
 typedef gboolean (*amar_fragment_callback_t)(
 	gpointer user_data,
-	uint16_t filenum,
+	guint16  filenum,
 	gpointer file_data,
-	uint16_t attrid,
+	guint16  attrid,
 	gpointer attrid_data,
 	gpointer *attr_data,
 	gpointer data,
@@ -181,7 +205,7 @@ typedef gboolean (*amar_fragment_callback_t)(
  * with attrid 0.  This final entry is used as the "catchall" for attributes
  * not matching any other array entries. */
 typedef struct amar_attr_handling_s {
-    uint16_t attrid;
+    guint16  attrid;
 
     /* if nonzero, this is the minimum size fragment that will be passed to the
      * callback.  Use SIZE_MAX for no limit, although this may result in
@@ -209,7 +233,7 @@ typedef struct amar_attr_handling_s {
  */
 typedef gboolean (*amar_file_start_callback_t)(
 	gpointer user_data,
-	uint16_t filenum,
+	guint16  filenum,
 	gpointer filename_buf,
 	gsize filename_len,
 	gboolean *ignore,
@@ -227,9 +251,13 @@ typedef gboolean (*amar_file_start_callback_t)(
  */
 typedef gboolean (*amar_file_finish_callback_t)(
 	gpointer user_data,
-	uint16_t filenum,
+	guint16  filenum,
 	gpointer *file_data,
 	gboolean truncated);
+
+typedef gboolean (*amar_done_callback_t)(
+	gpointer user_data,
+	GError *error);
 
 /* This function actually performs the read operation, calling all of the
  * above callbacks.  If any of the callbacks return FALSE, this function
@@ -248,4 +276,33 @@ gboolean amar_read(
 	amar_attr_handling_t *handling_array,
 	amar_file_start_callback_t file_start_cb,
 	amar_file_finish_callback_t file_finish_cb,
+	amar_done_callback_t done_cb,
 	GError **error);
+
+
+event_fn_t
+set_amar_read_cb(
+    amar_t *archive,
+    gpointer user_data,
+    amar_attr_handling_t *handling_array,
+    amar_file_start_callback_t file_start_cb,
+    amar_file_finish_callback_t file_finish_cb,
+    amar_done_callback_t done_cb,
+    GError **error);
+
+void amar_read_to(
+    amar_t   *archive,
+    guint16   filenum,
+    guint16   attrid,
+    int       fd);
+
+void amar_stop_read(
+    amar_t   *archive);
+
+void amar_start_read(
+    amar_t   *archive);
+
+void amar_set_error(
+    amar_t *archive,
+    char *msg);
+

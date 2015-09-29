@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -98,6 +99,7 @@ typedef struct est_s {
     one_est_t *dump_est;
     one_est_t *degr_est;
     one_est_t  estimate[MAX_LEVELS];
+    gboolean   allow_server;
     int last_level;
     gint64 last_lev0size;
     int next_level0;
@@ -105,9 +107,10 @@ typedef struct est_s {
     int promote;
     int post_dle;
     double fullrate, incrrate;
-    info_t info;
+    double fullcomp, incrcomp;
     char *errstr;
     char *degr_mesg;
+    info_t *info;
 } est_t;
 
 #define est(dp)	((est_t *)(dp)->up)
@@ -192,6 +195,7 @@ main(
     int exit_status = EXIT_SUCCESS;
     gboolean no_taper = FALSE;
     gboolean from_client = FALSE;
+    gboolean exact_match = FALSE;
 
     if (argc > 1 && argv && argv[1] && g_str_equal(argv[1], "--version")) {
 	printf("planner-%s\n", VERSION);
@@ -211,6 +215,7 @@ main(
     planner_setuid = set_root_privs(0);
 
     safe_fd(-1, 0);
+    make_crc_table();
 
     set_pname("planner");
 
@@ -273,6 +278,11 @@ main(
     }
     if (argc - diskarg_offset > 0 && strcmp(argv[diskarg_offset], "--from-client") == 0) {
 	from_client = TRUE;
+	diskarg_offset += 1;
+    }
+    if (argc - diskarg_offset > 0 && g_str_equal(argv[diskarg_offset],
+                                                 "--exact-match")) {
+	exact_match = TRUE;
 	diskarg_offset += 1;
     }
 
@@ -347,7 +357,7 @@ main(
     g_fprintf(stderr, _("%s: timestamp %s\n"),
 		    get_pname(), planner_timestamp);
 
-    errstr = match_disklist(&origq, argc-diskarg_offset,
+    errstr = match_disklist(&origq, exact_match, argc-diskarg_offset,
 				    argv+diskarg_offset);
     if (errstr) {
 	g_fprintf(stderr,"%s",errstr);
@@ -445,12 +455,16 @@ main(
 	GSList *holding_list, *holding_file;
 	char *qdisk, *qhname;
 
+	holding_cleanup(NULL, stderr);
+
 	/* get *all* flushable files in holding, without checking against
 	 * the disklist (which may not contain some of the dumps) */
 	holding_list = holding_get_files_for_flush(NULL);
 	for(holding_file=holding_list; holding_file != NULL;
 				       holding_file = holding_file->next) {
-	    holding_file_get_dumpfile((char *)holding_file->data, &file);
+	    if (!holding_file_get_dumpfile((char *)holding_file->data, &file)) {
+		continue;
+	    }
 
 	    if (holding_file_size((char *)holding_file->data, 1) <= 0) {
 		log_add(L_INFO, "%s: removing file with no data.",
@@ -462,7 +476,7 @@ main(
 
 	    /* see if this matches the command-line arguments */
 	    if (conf_autoflush == 1 &&
-		!match_dumpfile(&file, argc-diskarg_offset,
+		!match_dumpfile(&file, exact_match, argc-diskarg_offset,
 				       argv+diskarg_offset)) {
 		continue;
 	    }
@@ -756,6 +770,7 @@ setup_estimate(
      disk_t *dp)
 {
     est_t *ep;
+    info_t *info;
     int i;
     char *qname;
     int overwrite_runs;
@@ -767,22 +782,10 @@ setup_estimate(
 		    get_pname(), walltime_str(curclock()),
 		    dp->host->hostname, qname);
 
-    /* setup working data struct for disk */
-
-    ep = alloc(SIZEOF(est_t));
-    dp->up = (void *) ep;
-    ep->state = DISK_READY;
-    ep->dump_priority = dp->priority;
-    ep->errstr = 0;
-    ep->promote = 0;
-    ep->post_dle = 0;
-    ep->degr_mesg = NULL;
-    ep->dump_est = &default_one_est;
-    ep->degr_est = &default_one_est;
-
     /* get current information about disk */
 
-    if(get_info(dp->host->hostname, dp->name, &ep->info)) {
+    info = g_new0(info_t, 1);
+    if(get_info(dp->host->hostname, dp->name, info)) {
 	/* no record for this disk, make a note of it */
 	log_add(L_INFO, _("Adding new disk %s:%s."), dp->host->hostname, qname);
     }
@@ -818,9 +821,23 @@ setup_estimate(
 	}
     }
 
+    /* setup working data struct for disk */
+
+    ep = alloc(SIZEOF(est_t));
+    dp->up = (void *) ep;
+    ep->info = info;
+    ep->state = DISK_READY;
+    ep->dump_priority = dp->priority;
+    ep->errstr = 0;
+    ep->promote = 0;
+    ep->post_dle = 0;
+    ep->degr_mesg = NULL;
+    ep->dump_est = &default_one_est;
+    ep->degr_est = &default_one_est;
+
     /* calculated fields */
 
-    if (ISSET(ep->info.command, FORCE_FULL)) {
+    if (ISSET(info->command, FORCE_FULL)) {
 	/* force a level 0, kind of like a new disk */
 	if(dp->strategy == DS_NOFULL) {
 	    /*
@@ -839,18 +856,18 @@ setup_estimate(
 		    dp->host->hostname, qname);
 
 	    /* clear force command */
-	    CLR(ep->info.command, FORCE_FULL);
-	    ep->last_level = last_level(&ep->info);
-	    ep->next_level0 = next_level0(dp, &ep->info);
+	    CLR(info->command, FORCE_FULL);
+	    ep->last_level = last_level(info);
+	    ep->next_level0 = next_level0(dp, info);
 	} else if (dp->strategy == DS_INCRONLY) {
 	    log_add(L_WARNING,
 		    _("Cannot force full dump of %s:%s with incronly option."),
 		    dp->host->hostname, qname);
 
 	    /* clear force command */
-	    CLR(ep->info.command, FORCE_FULL);
-	    ep->last_level = last_level(&ep->info);
-	    ep->next_level0 = next_level0(dp, &ep->info);
+	    CLR(info->command, FORCE_FULL);
+	    ep->last_level = last_level(info);
+	    ep->next_level0 = next_level0(dp, info);
 	} else {
 	    ep->degr_mesg = _("Skipping: force-full disk can't be dumped in degraded mode");
 	    ep->last_level = -1;
@@ -859,47 +876,66 @@ setup_estimate(
 		    dp->host->hostname, qname);
 	}
     }
+    else if (ISSET(info->command, FORCE_LEVEL_1)) {
+	/* force a level 1 */
+	if (dp->strategy == DS_NOINC) {
+	    log_add(L_WARNING,
+		    _("Cannot force level 1 dump of %s:%s with no-incr option."),
+		    dp->host->hostname, qname);
+
+	    /* clear force-level-1 command */
+	    CLR(info->command, FORCE_LEVEL_1);
+	    ep->last_level = last_level(info);
+	    ep->next_level0 = next_level0(dp, info);
+	} else {
+	    ep->degr_mesg = "";
+	    ep->last_level = 0;
+	    ep->next_level0 = 0;
+	    log_add(L_INFO, _("Forcing level 1 of %s:%s as directed."),
+		    dp->host->hostname, qname);
+	}
+    }
     else if(dp->strategy == DS_NOFULL) {
 	/* force estimate of level 1 */
 	ep->last_level = 1;
-	ep->next_level0 = next_level0(dp, &ep->info);
+	ep->next_level0 = next_level0(dp, info);
     }
     else {
-	ep->last_level = last_level(&ep->info);
-	ep->next_level0 = next_level0(dp, &ep->info);
+	ep->last_level = last_level(info);
+	ep->next_level0 = next_level0(dp, info);
     }
 
     /* adjust priority levels */
 
     /* warn if dump will be overwritten */
-    if (ep->last_level > -1 && strlen(ep->info.inf[0].label) > 0) {
-	overwrite_runs = when_overwrite(ep->info.inf[0].label);
+    if (ep->last_level > -1 && strlen(info->inf[0].label) > 0) {
+	overwrite_runs = when_overwrite(info->inf[0].label);
 	if(overwrite_runs == 0) {
 	    log_add(L_WARNING, _("Last full dump of %s:%s "
 		    "on tape %s overwritten on this run."),
-		    dp->host->hostname, qname, ep->info.inf[0].label);
+		    dp->host->hostname, qname, info->inf[0].label);
 	} else if(overwrite_runs <= RUNS_REDZONE) {
 	    log_add(L_WARNING,
 		    plural(_("Last full dump of %s:%s on tape %s overwritten in %d run."),
 			   _("Last full dump of %s:%s on tape %s overwritten in %d runs."), overwrite_runs),
-		    dp->host->hostname, qname, ep->info.inf[0].label,
+		    dp->host->hostname, qname, info->inf[0].label,
 		    overwrite_runs);
 	}
     }
 
     /* warn if last level 1 will be overwritten */
-    if (ep->last_level > 1 && strlen(ep->info.inf[1].label) > 0) {
-	overwrite_runs = when_overwrite(ep->info.inf[1].label);
+    if (ep->last_level > 1 && strlen(info->inf[1].label) > 0) {
+	overwrite_runs = when_overwrite(info->inf[1].label);
 	if(overwrite_runs == 0) {
 	    log_add(L_WARNING, _("Last level 1 dump of %s:%s "
 		    "on tape %s overwritten on this run, resetting to level 1"),
-		    dp->host->hostname, qname, ep->info.inf[1].label);
+		    dp->host->hostname, qname, info->inf[1].label);
 	    ep->last_level = 0;
 	} else if(overwrite_runs <= RUNS_REDZONE) {
 	    log_add(L_WARNING,
 		    plural(_("Last level 1 dump of %s:%s on tape %s overwritten in %d run."),
 			   _("Last level 1 dump of %s:%s on tape %s overwritten in %d runs."), overwrite_runs),
-		    dp->host->hostname, qname, ep->info.inf[1].label,
+		    dp->host->hostname, qname, info->inf[1].label,
 		    overwrite_runs);
 	}
     }
@@ -911,7 +947,7 @@ setup_estimate(
 		dp->host->hostname, qname, (-ep->next_level0));
 	ep->dump_priority -= ep->next_level0;
     }
-    else if (ISSET(ep->info.command, FORCE_FULL))
+    else if (ISSET(info->command, FORCE_FULL))
 	ep->dump_priority += 1;
     /* else XXX bump up the priority of incrementals that failed last night */
 
@@ -920,11 +956,11 @@ setup_estimate(
     if(dp->skip_full && dp->strategy != DS_NOINC) {
 	if(ep->next_level0 <= 0) {
 	    /* update the date field */
-	    ep->info.inf[0].date = today;
-	    CLR(ep->info.command, FORCE_FULL);
+	    info->inf[0].date = today;
+	    CLR(info->command, FORCE_FULL);
 	    ep->next_level0 += conf_dumpcycle;
 	    ep->last_level = 0;
-	    if(put_info(dp->host->hostname, dp->name, &ep->info)) {
+	    if(put_info(dp->host->hostname, dp->name, info)) {
 		error(_("could not put info record for %s:%s: %s"),
 		      dp->host->hostname, qname, strerror(errno));
 		/*NOTREACHED*/
@@ -934,9 +970,9 @@ setup_estimate(
 	    g_fprintf(stderr,_("%s:%s lev 0 skipped due to skip-full flag\n"),
 		    dp->host->hostname, qname);
 	    /* don't enqueue the disk */
-	    askfor(ep, 0, -1, &ep->info);
-	    askfor(ep, 1, -1, &ep->info);
-	    askfor(ep, 2, -1, &ep->info);
+	    askfor(ep, 0, -1, info);
+	    askfor(ep, 1, -1, info);
+	    askfor(ep, 2, -1, info);
 	    g_fprintf(stderr, _("%s: SKIPPED %s %s 0 [skip-full]\n"),
 		    get_pname(), dp->host->hostname, qname);
 	    log_add(L_SUCCESS, _("%s %s %s 0 [skipped: skip-full]"),
@@ -956,11 +992,11 @@ setup_estimate(
 	}
     }
 
-    if(dp->strategy == DS_INCRONLY && ep->last_level == -1 && !ISSET(ep->info.command, FORCE_FULL)) {
+    if(dp->strategy == DS_INCRONLY && ep->last_level == -1 && !ISSET(info->command, FORCE_FULL)) {
 	/* don't enqueue the disk */
-	askfor(ep, 0, -1, &ep->info);
-	askfor(ep, 1, -1, &ep->info);
-	askfor(ep, 2, -1, &ep->info);
+	askfor(ep, 0, -1, info);
+	askfor(ep, 1, -1, info);
+	askfor(ep, 2, -1, info);
 	log_add(L_FAIL, _("%s %s 19000101 1 [Skipping incronly because no full dump were done]"),
 		dp->host->hostname, qname);
 	g_fprintf(stderr,_("%s:%s lev 1 skipped due to strategy incronly and no full dump were done\n"),
@@ -975,9 +1011,9 @@ setup_estimate(
 	g_fprintf(stderr,_("%s:%s lev 1 skipped due to skip-incr flag\n"),
 		dp->host->hostname, qname);
 	/* don't enqueue the disk */
-	askfor(ep, 0, -1, &ep->info);
-	askfor(ep, 1, -1, &ep->info);
-	askfor(ep, 2, -1, &ep->info);
+	askfor(ep, 0, -1, info);
+	askfor(ep, 1, -1, info);
+	askfor(ep, 2, -1, info);
 
 	g_fprintf(stderr, _("%s: SKIPPED %s %s 1 [skip-incr]\n"),
 		get_pname(), dp->host->hostname, qname);
@@ -997,12 +1033,16 @@ setup_estimate(
 	ep->next_level0 = 0;
     }
 
-    if(ep->last_level == 0) ep->level_days = 0;
-    else ep->level_days = runs_at(&ep->info, ep->last_level);
-    ep->last_lev0size = ep->info.inf[0].csize;
+    //if(ep->last_level == 0) ep->level_days = 0;
+    //else ep->level_days = runs_at(info, ep->last_level);
+    ep->level_days = runs_at(info, ep->last_level);
+    ep->last_lev0size = info->inf[0].csize;
 
-    ep->fullrate = perf_average(ep->info.full.rate, 0.0);
-    ep->incrrate = perf_average(ep->info.incr.rate, 0.0);
+    ep->fullrate = perf_average(info->full.rate, 0.0);
+    ep->incrrate = perf_average(info->incr.rate, 0.0);
+
+    ep->fullcomp = perf_average(info->full.comp, dp->comprate[0]);
+    ep->incrcomp = perf_average(info->incr.comp, dp->comprate[1]);
 
     /* determine which estimates to get */
 
@@ -1010,40 +1050,45 @@ setup_estimate(
 
     if (dp->strategy == DS_NOINC ||
 	(!dp->skip_full &&
-	 (!ISSET(ep->info.command, FORCE_BUMP) ||
+	 !ISSET(info->command, FORCE_LEVEL_1) &&
+	 (!ISSET(info->command, FORCE_BUMP) ||
 	  dp->skip_incr ||
 	  ep->last_level == -1))) {
-	if(ISSET(ep->info.command, FORCE_BUMP) && ep->last_level == -1) {
+	if(ISSET(info->command, FORCE_BUMP) && ep->last_level == -1) {
 	    log_add(L_INFO,
 		  _("Remove force-bump command of %s:%s because it's a new disk."),
 		    dp->host->hostname, qname);
 	}
 	switch (dp->strategy) {
-	case DS_STANDARD: 
+	case DS_STANDARD:
 	case DS_NOINC:
-	    askfor(ep, i++, 0, &ep->info);
+	    askfor(ep, i++, 0, info);
 	    if (ep->last_level == -1)
-		ep->degr_mesg = _("Skipping: new disk can't be dumped in degraded mode");
-	    else
+		if (ISSET(info->command, FORCE_FULL)) {
+		    ep->degr_mesg = _("Skipping: Can't bump a 'force' dle in degraded mode");
+		} else {
+		    ep->degr_mesg = _("Skipping: new disk can't be dumped in degraded mode");
+		}
+	    else if (dp->strategy == DS_NOINC)
 		ep->degr_mesg = _("Skipping: strategy NOINC can't be dumped in degraded mode");
 	    if(dp->skip_full) {
 		log_add(L_INFO, _("Ignoring skip-full for %s:%s "
 			"because the strategy is NOINC."),
 			dp->host->hostname, qname);
 	    }
-	    if(ISSET(ep->info.command, FORCE_BUMP)) {
+	    if(ISSET(info->command, FORCE_BUMP)) {
 		log_add(L_INFO,
 		 _("Ignoring FORCE_BUMP for %s:%s because the strategy is NOINC."),
 			dp->host->hostname, qname);
 	    }
-	    
+
 	    break;
 
 	case DS_NOFULL:
 	    break;
 
 	case DS_INCRONLY:
-	    if (ISSET(ep->info.command, FORCE_FULL))
+	    if (ISSET(info->command, FORCE_FULL))
 		ep->last_level = 0;
 	    break;
 	}
@@ -1054,7 +1099,7 @@ setup_estimate(
 	    if (ep->degr_mesg == NULL)
 		ep->degr_mesg = _("Skipping: new disk can't be dumped in degraded mode");
 	    if(dp->strategy == DS_NOFULL || dp->strategy == DS_INCRONLY) {
-		askfor(ep, i++, 1, &ep->info);
+		askfor(ep, i++, 1, info);
 	    } else {
 		assert(!dp->skip_full);		/* should be handled above */
 	    }
@@ -1063,23 +1108,26 @@ setup_estimate(
 
 	    curr_level = ep->last_level;
 
-	    if (ISSET(ep->info.command, FORCE_NO_BUMP)) {
+	    if (ISSET(info->command, FORCE_LEVEL_1)) {
+		askfor(ep, i++, 1, info);
+		ep->degr_mesg = _("Skipping: force-level-1 disk can't be dumped in degraded mode");
+	    } else if (ISSET(info->command, FORCE_NO_BUMP)) {
 		if(curr_level > 0) { /* level 0 already asked for */
-		    askfor(ep, i++, curr_level, &ep->info);
+		    askfor(ep, i++, curr_level, info);
 		}
 		log_add(L_INFO,_("Preventing bump of %s:%s as directed."),
 			dp->host->hostname, qname);
 		ep->degr_mesg = _("Skipping: force-no-bump disk can't be dumped in degraded mode");
-	    } else if (ISSET(ep->info.command, FORCE_BUMP)
+	    } else if (ISSET(info->command, FORCE_BUMP)
 		       && curr_level + 1 < DUMP_LEVELS) {
-		askfor(ep, i++, curr_level+1, &ep->info);
+		askfor(ep, i++, curr_level+1, info);
 		log_add(L_INFO,_("Bumping of %s:%s at level %d as directed."),
 			dp->host->hostname, qname, curr_level+1);
 		ep->degr_mesg = _("Skipping: force-bump disk can't be dumped in degraded mode");
 	    } else if (curr_level == 0) {
-		askfor(ep, i++, 1, &ep->info);
+		askfor(ep, i++, 1, info);
 	    } else {
-		askfor(ep, i++, curr_level, &ep->info);
+		askfor(ep, i++, curr_level, info);
 		/*
 		 * If last time we dumped less than the threshold, then this
 		 * time we will too, OR the extra size will be charged to both
@@ -1087,25 +1135,25 @@ setup_estimate(
 		 * if we haven't been at this level 2 days, or the dump failed
 		 * last night, we can't bump.
 		 */
-		if((ep->info.inf[curr_level].size == (gint64)0 || /* no data, try it anyway */
-		    (((ep->info.inf[curr_level].size > bump_thresh(curr_level, ep->info.inf[0].size,dp->bumppercent, dp->bumpsize, dp->bumpmult)))
+		if((info->inf[curr_level].size == (gint64)0 || /* no data, try it anyway */
+		    (((info->inf[curr_level].size > bump_thresh(curr_level, info->inf[0].size,dp->bumppercent, dp->bumpsize, dp->bumpmult)))
 		     && ep->level_days >= dp->bumpdays))
 		   && curr_level + 1 < DUMP_LEVELS) {
-		    askfor(ep, i++, curr_level+1, &ep->info);
+		    askfor(ep, i++, curr_level+1, info);
 		}
-	    } 
+	    }
 	}
     }
 
-    while(i < MAX_LEVELS) 	/* mark end of estimates */
-	askfor(ep, i++, -1, &ep->info);
+    while(i < MAX_LEVELS)	/* mark end of estimates */
+	askfor(ep, i++, -1, info);
 
     /* debug output */
 
     g_fprintf(stderr, _("setup_estimate: %s:%s: command %u, options: %s    "
-    	    "last_level %d next_level0 %d level_days %d    getting estimates "
+	    "last_level %d next_level0 %d level_days %d    getting estimates "
 	    "%d (%lld) %d (%lld) %d (%lld)\n"),
-	    dp->host->hostname, qname, ep->info.command,
+	    dp->host->hostname, qname, info->command,
 	    dp->strategy == DS_NOFULL ? "no-full" :
 		 dp->strategy == DS_INCRONLY ? "incr-only" :
 		 dp->skip_full ? "skip-full" :
@@ -1175,8 +1223,8 @@ est_csize(
         return;
     }
 
-    if (one_est->level == 0) ratio = perf_average(est(dp)->info.full.comp, dp->comprate[0]);
-    else ratio = perf_hist(&est(dp)->info, one_est->level, size,dp->comprate[1]);
+    if (one_est->level == 0) ratio = est(dp)->fullcomp;
+    else ratio = est(dp)->incrcomp;
 
     /*
      * make sure over-inflated compression ratios don't throw off the
@@ -1283,10 +1331,9 @@ static int runs_at(
 
     last = last_level(info);
     if(lev != last) return 0;
-    if(lev == 0) return 1;
-
     if(info->consecutive_runs != -1)
 	return info->consecutive_runs;
+    if(lev == 0) return 1;
 
     /* to keep compatibility with old infofile */
     cur_tape = lookup_tapelabel(info->inf[lev].label);
@@ -1514,7 +1561,8 @@ static void getsize(
 		if (estimate == ES_SERVER)
 		    break;
 	    }
-	    if (estimate == ES_SERVER) {
+	    est(dp)->allow_server = estimate == ES_SERVER;
+	    if (est(dp)->allow_server) {
 		info_t info;
 		nb_server++;
 		get_info(dp->host->hostname, dp->name, &info);
@@ -1834,7 +1882,7 @@ static void handle_result(
 
     if (pkt == NULL) {
 	if (strcmp(security_geterror(sech), "timeout waiting for REP") == 0) {
-	    errbuf = vstrallocf("Some estimate timeout on %s, using server estimate if possible", hostp->hostname);
+	    errbuf = vstrallocf("Some estimate timeout on %s", hostp->hostname);
 	} else {
 	    errbuf = vstrallocf(_("Request to %s failed: %s"),
 			hostp->hostname, security_geterror(sech));
@@ -1980,7 +2028,8 @@ static void handle_result(
 		break;
 	    }
 	}
-	if (i == MAX_LEVELS) {
+	if (i == MAX_LEVELS && level > 0) {
+			/* client always report level 0 for some error */
 	    goto bad_msg;		/* this est wasn't requested */
 	}
 	est(dp)->got_estimate++;
@@ -2131,16 +2180,28 @@ static void handle_result(
     i = 0;
     for(dp = hostp->disks; dp != NULL; dp = dp->hostnext) {
 	if (dp->todo) {
-	    if(est(dp)->state == DISK_ACTIVE) {
+	    if (est(dp)->state == DISK_ACTIVE ||
+		est(dp)->state == DISK_PARTIALY_DONE) {
+		char *tt;
 		qname = quote_string(dp->name);
+		if (est(dp)->state == DISK_ACTIVE) {
+		    remove_disk(&waitq, dp);
+		} else if(est(dp)->state == DISK_PARTIALY_DONE) {
+		    remove_disk(&pestq, dp);
+		}
 		est(dp)->state = DISK_DONE;
-		remove_disk(&waitq, dp);
-		enqueue_disk(&failq, dp);
+		if (est(dp)->allow_server) {
+		    enqueue_disk(&estq, dp);
+		    tt = ", using server estimate";
+		} else {
+		    enqueue_disk(&failq, dp);
+		    tt = "";
+		}
 		i++;
 
-		est(dp)->errstr = stralloc(errbuf);
+		est(dp)->errstr = g_strdup_printf("%s%s", errbuf, tt);
 		g_fprintf(stderr, _("error result for host %s disk %s: %s\n"),
-			  dp->host->hostname, qname, errbuf);
+			  dp->host->hostname, qname, est(dp)->errstr);
 		amfree(qname);
 	    }
 	}
@@ -2151,7 +2212,25 @@ static void handle_result(
 	 * reported.
 	 */
 	log_add(L_ERROR, "%s", errbuf);
+	for(dp = hostp->disks; dp != NULL; dp = dp->hostnext) {
+	    if (dp->todo) {
+		qname = quote_string(dp->name);
+		if(est(dp)->state == DISK_ACTIVE) {
+		    remove_disk(&waitq, dp);
+		} else if(est(dp)->state == DISK_PARTIALY_DONE) {
+		    remove_disk(&pestq, dp);
+		}
+		est(dp)->state = DISK_DONE;
+		enqueue_disk(&failq, dp);
+
+		est(dp)->errstr = g_strdup(errbuf);
+		g_fprintf(stderr, _("error result for host %s disk %s: %s\n"),
+			  dp->host->hostname, qname, errbuf);
+		amfree(qname);
+	    }
+	}
     }
+
     hostp->up = HOST_DONE;
     amfree(errbuf);
     /* try to clean up any defunct processes, since Amanda doesn't wait() for
@@ -2221,7 +2300,8 @@ static void analyze_estimate(
 		/* fill in degraded mode info */
 		g_fprintf(stderr,_("(picking inclevel for degraded mode)"));
 		ep->degr_est = pick_inclevel(dp);
-		if (ep->degr_est->csize == (gint64)-1) {
+		if (ep->degr_est->level >= 0 &&
+		    ep->degr_est->csize == (gint64)-1) {
                     ep->degr_est = est_for_level(dp, ep->degr_est->level + 1);
 		}
 		if (ep->degr_est->csize == (gint64)-1) {
@@ -2471,15 +2551,19 @@ static void delay_dumps(void)
     disk_t *	dp;
     disk_t *	ndp;
     disk_t *	preserve;
+    disk_t *	delayed_dp;
     bi_t *	bi;
     bi_t  *	nbi;
     gint64	new_total;		/* New total_size */
     char	est_kb[20];		/* Text formatted dump size */
+    char	tape_kb[20];		/* Text formatted tape size */
     int		nb_forced_level_0;
     info_t	info;
     int		delete;
     char *	message;
     gint64	full_size;
+    time_t      timestamps;
+    int         priority;
 
     biq.head = biq.tail = NULL;
 
@@ -2523,8 +2607,10 @@ static void delay_dumps(void)
 	}
 
 	/* Format dumpsize for messages */
-	g_snprintf(est_kb, 20, "%lld KB,",
+	g_snprintf(est_kb, 20, "%lld KB",
                    (long long)est(dp)->dump_est->csize);
+	g_snprintf(tape_kb, 20, "%lld KB",
+                   (long long)tapetype_get_length(tape) * (gint64)avail_tapes);
 
 	if(est(dp)->dump_est->level == 0) {
 	    if(dp->skip_incr) {
@@ -2545,15 +2631,16 @@ static void delay_dumps(void)
 	    }
 	    else {
 		delete = 0;
-		message = _("full dump delayed");
+		message = _("full dump delayed, doing incremental");
 	    }
 	}
 	else {
 	    delete = 1;
 	    message = _("skipping incremental");
 	}
-	delay_one_dump(dp, delete, _("dump larger than available tape space,"),
-		       est_kb, message, NULL);
+	delay_one_dump(dp, delete, "dump estimate (", est_kb,
+		       ") is larger than available tape space (", tape_kb,
+		       "), ", message, NULL);
     }
 
     /*
@@ -2571,51 +2658,71 @@ static void delay_dumps(void)
 
     nb_forced_level_0 = 0;
     preserve = NULL;
-    for(dp = schedq.head; dp != NULL && preserve == NULL; dp = dp->next)
-	if(est(dp)->dump_est->level == 0)
-	    preserve = dp;
+    timestamps = 2147483647;
+    priority = 0;
+    for(dp = schedq.head; dp != NULL; dp = dp->next) {
+	if (est(dp)->dump_est->level == 0) {
+	    if (!preserve ||
+		est(dp)->dump_priority > priority ||
+		(est(dp)->dump_priority == priority &&
+		 est(dp)->info->inf[0].date < timestamps)) {
+		priority = est(dp)->dump_priority;
+		timestamps = est(dp)->info->inf[0].date;
+		preserve = dp;
+	    }
+	}
+    }
 
     /* 2.a. Do not delay forced full */
-    for(dp = schedq.tail;
+    delayed_dp = NULL;
+    do {
+	delayed_dp = 0;
+	timestamps = 0;
+	for(dp = schedq.tail;
 		dp != NULL && total_size > tape_length;
 		dp = ndp) {
-	ndp = dp->prev;
+	    ndp = dp->prev;
 
-	if(est(dp)->dump_est->level != 0) continue;
+	    if(est(dp)->dump_est->level != 0) continue;
 
-	get_info(dp->host->hostname, dp->name, &info);
-	if(ISSET(info.command, FORCE_FULL)) {
-	    nb_forced_level_0 += 1;
-	    preserve = dp;
-	    continue;
+	    get_info(dp->host->hostname, dp->name, &info);
+	    if(ISSET(info.command, FORCE_FULL)) {
+		nb_forced_level_0 += 1;
+		preserve = dp;
+		continue;
+	    }
+
+	    if (dp != preserve &&
+		est(dp)->info->inf[0].date > timestamps) {
+		delayed_dp = dp;
+		timestamps = est(dp)->info->inf[0].date;
+	    }
 	}
-
-	if(dp != preserve) {
-
+	if (delayed_dp) {
 	    /* Format dumpsize for messages */
 	    g_snprintf(est_kb, 20, "%lld KB,",
-                       (long long)est(dp)->dump_est->csize);
+                       (long long)est(delayed_dp)->dump_est->csize);
 
-	    if(dp->skip_incr) {
+	    if(delayed_dp->skip_incr) {
 		delete = 1;
 		message = _("but cannot incremental dump skip-incr disk");
 	    }
-	    else if(est(dp)->last_level < 0) {
+	    else if(est(delayed_dp)->last_level < 0) {
 		delete = 1;
 		message = _("but cannot incremental dump new disk");
 	    }
-	    else if(est(dp)->degr_est->level < 0) {
+	    else if(est(delayed_dp)->degr_est->level < 0) {
 		delete = 1;
 		message = _("but no incremental estimate");
 	    }
 	    else {
 		delete = 0;
-		message = _("full dump delayed");
+		message = _("full dump delayed, doing incremental");
 	    }
-	    delay_one_dump(dp, delete, _("dumps too big,"), est_kb,
+	    delay_one_dump(delayed_dp, delete, _("dumps too big,"), est_kb,
 			   message, NULL);
 	}
-    }
+    } while (delayed_dp);
 
     /* 2.b. Delay forced full if needed */
     if(nb_forced_level_0 > 0 && total_size > tape_length) {
@@ -2692,7 +2799,7 @@ static void delay_dumps(void)
 	int avail_tapes = 1;
 	nbi = bi->prev;
 	dp = bi->dp;
-	if(dp->splitsize > (gint64)0)
+	if (dp->splitsize > (gint64)0 || dp->allow_split)
 	    avail_tapes = conf_runtapes;
 
 	if(bi->deleted) {
@@ -2984,7 +3091,8 @@ static int promote_hills(void)
     }
 
     for(dp = schedq.head; dp != NULL; dp = dp->next) {
-	days = est(dp)->next_level0;   /* This is > 0 by definition */
+	days = est(dp)->next_level0;
+	if (days < 0) days = 0;
 	if(days<my_dumpcycle && !dp->skip_full && dp->strategy != DS_NOFULL &&
 	   dp->strategy != DS_INCRONLY) {
 	    sp[days].disks++;

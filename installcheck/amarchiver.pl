@@ -1,8 +1,9 @@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -97,18 +98,18 @@ is($Installcheck::Run::stdout, "test.tmp-1\ntest.tmp-2\n",
 
 # test extracting archives
 
-unlink("test.tmp-1.16");
-unlink("test.tmp-2.16");
+unlink("test.tmp-1");
+unlink("test.tmp-2");
 ok(run('amarchiver', '--extract', '--file', $archfile),
     "archive extraction succeeds");
-ok((-f "test.tmp-1.16" && -f "test.tmp-2.16"), "..and the files reappear")
+ok((-f "test.tmp-1" && -f "test.tmp-2"), "..and the files reappear")
     or diag(`find .`);
 
-unlink("test.tmp-1.16");
-unlink("test.tmp-2.16");
+unlink("test.tmp-1");
+unlink("test.tmp-2");
 ok(run('amarchiver', '--extract', '--file', $archfile, "test.tmp-2"),
     "archive extraction of only one file succeeds");
-ok((! -f "test.tmp-1.16" && -f "test.tmp-2.16"), "..and the file reappears")
+ok((! -f "test.tmp-1" && -f "test.tmp-2"), "..and the file reappears")
     or diag(`find .`);
 
 END {

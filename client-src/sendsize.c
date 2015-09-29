@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -135,7 +136,7 @@ main(
     char *qamdevice = NULL;
     dle_t *dle;
     GSList *errlist;
-    level_t *alevel;
+    am_level_t *alevel;
 
     (void)argc;	/* Quiet unused parameter warning */
     (void)argv;	/* Quiet unused parameter warning */
@@ -322,7 +323,7 @@ main(
 	    goto err;
 	}
 	skip_integer(s, ch);
-	alevel = g_new0(level_t, 1);
+	alevel = g_new0(am_level_t, 1);
 	alevel->level = level;
 	dle->levellist = g_slist_append(dle->levellist, alevel);
 
@@ -637,7 +638,7 @@ dle_add_diskest(
 
     levellist = dle->levellist;
     while (levellist != NULL) {
-	level_t *alevel = (level_t *)levellist->data;
+	am_level_t *alevel = (am_level_t *)levellist->data;
 	if (alevel->level < 0)
 	    alevel->level = 0;
 	if (alevel->level >= DUMP_LEVELS)
@@ -650,7 +651,7 @@ dle_add_diskest(
 	    /* already have disk info, just note the level request */
 	    levellist = dle->levellist;
 	    while (levellist != NULL) {
-		level_t *alevel = (level_t *)levellist->data;
+		am_level_t *alevel = (am_level_t *)levellist->data;
 		int      level  = alevel->level;
 		curp->est[level].needestimate = 1;
 		curp->est[level].server = alevel->server;
@@ -677,7 +678,7 @@ dle_add_diskest(
     }
     levellist = dle->levellist;
     while (levellist != NULL) {
-	level_t *alevel = (level_t *)levellist->data;
+	am_level_t *alevel = (am_level_t *)levellist->data;
 	newp->est[alevel->level].needestimate = 1;
 	newp->est[alevel->level].server = alevel->server;
 	levellist = g_slist_next(levellist);
@@ -1550,7 +1551,6 @@ getsize_dump(
 
 	    default:
 	    {
-		char *config;
 		char *killpgrp_cmd = vstralloc(amlibexecdir, "/killpgrp", NULL);
 		dbprintf(_("running %s\n"), killpgrp_cmd);
 		dup2(killctl[0], 0);
@@ -1560,10 +1560,6 @@ getsize_dump(
 		close(pipefd[1]);
 		close(killctl[1]);
 		close(nullfd);
-		if (g_options->config)
-		    config = g_options->config;
-		else
-		    config = "NOCONFIG";
 		safe_fd(-1, 0);
 		execle(killpgrp_cmd, killpgrp_cmd, config, (char *)0,
 		       safe_env());

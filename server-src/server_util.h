@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -50,7 +51,7 @@ enum {
     PARTDONE, PORT_WRITE, DUMPER_STATUS,                /* ... cmds */
     PORT, TAPE_ERROR, TAPER_OK,				/* taper results */
     REQUEST_NEW_TAPE, DIRECTTCP_PORT, TAKE_SCRIBE_FROM,
-    START_SCAN, CLOSE_VOLUME, LAST_TOK
+    START_SCAN, CLOSE_VOLUME, READY, LAST_TOK
 };
 extern const char *cmdstr[];
 

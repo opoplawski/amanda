@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -95,7 +96,7 @@ main(
     dle_t *dle;
     int level;
     GSList *errlist;
-    level_t *alevel;
+    am_level_t *alevel;
 
     if (argc > 1 && argv && argv[1] && g_str_equal(argv[1], "--version")) {
 	printf("selfcheck-%s\n", VERSION);
@@ -260,7 +261,7 @@ main(
 	if (ch == '\0' || sscanf(s - 1, "%d", &level) != 1) {
 	    goto err;				/* bad level */
 	}
-	alevel = g_new0(level_t, 1);
+	alevel = g_new0(am_level_t, 1);
 	alevel->level = level;
 	dle->levellist = g_slist_append(dle->levellist, alevel);
 	skip_integer(s, ch);
@@ -1222,81 +1223,144 @@ static void
 print_platform(void)
 {
     struct stat stat_buf;
-    char *uname;
+    char *uname = NULL;
     char *distro = NULL;
     char *platform = NULL;
+    char *productName = NULL;
+    char *productVersion = NULL;
     char  line[1025];
     GPtrArray *argv_ptr;
 
-    if (stat("/etc/lsb-release", &stat_buf) == 0) {
-	FILE *release = fopen("/etc/lsb-release", "r");
-	distro = "Ubuntu";
-	if (release) {
-	    char *result;
-	    while ((result = fgets(line, 1024, release))) {
-		if (strstr(line, "DESCRIPTION")) {
-		    platform = strchr(line, '=');
-		    if (platform) platform++;
-		}
-	    }
-	    fclose(release);
+    if (!stat("/usr/bin/lsb_release", &stat_buf)) {
+	argv_ptr = g_ptr_array_new();
+	g_ptr_array_add(argv_ptr, "/usr/bin/lsb_release");
+	g_ptr_array_add(argv_ptr, "--id");
+	g_ptr_array_add(argv_ptr, "-s");
+	g_ptr_array_add(argv_ptr, NULL);
+	distro = get_first_line(argv_ptr);
+	if (distro && distro[0] == '"') {
+	    char *p= g_strdup(distro+1);
+	    p[strlen(p)-1] = '\0';
+	    g_free(distro);
+	    distro = p;
 	}
+	g_ptr_array_free(argv_ptr, TRUE);
+
+	argv_ptr = g_ptr_array_new();
+	g_ptr_array_add(argv_ptr, "/usr/bin/lsb_release");
+	g_ptr_array_add(argv_ptr, "--description");
+	g_ptr_array_add(argv_ptr, "-s");
+	g_ptr_array_add(argv_ptr, NULL);
+	platform = get_first_line(argv_ptr);
+	if (platform && platform[0] == '"') {
+	    char *p= g_strdup(platform+1);
+	    p[strlen(p)-1] = '\0';
+	    g_free(platform);
+	    platform = p;
+	}
+	g_ptr_array_free(argv_ptr, TRUE);
     } else if (stat("/etc/redhat-release", &stat_buf) == 0) {
 	FILE *release = fopen("/etc/redhat-release", "r");
-	distro = "RPM";
+	distro = g_strdup("RPM");
 	if (release) {
 	    char *result;
 	    result = fgets(line, 1024, release);
 	    if (result) {
-		platform = line;
+		platform = g_strdup(line);
+	    }
+	    fclose(release);
+	}
+    } else if (stat("/etc/lsb-release", &stat_buf) == 0) {
+	FILE *release = fopen("/etc/lsb-release", "r");
+	distro = g_strdup("Ubuntu");
+	if (release) {
+	    while (fgets(line, 1024, release)) {
+		if (strstr(line, "DESCRIPTION")) {
+		    char *p = strchr(line, '=');
+		    if (p) {
+			g_free(platform);
+			platform = g_strdup(p+1);
+		    }
+		}
 	    }
 	    fclose(release);
 	}
     } else if (stat("/etc/debian_version", &stat_buf) == 0) {
 	FILE *release = fopen("/etc/debian_version", "r");
-	distro = "Debian";
+	distro = g_strdup("Debian");
 	if (release) {
 	    char *result;
 	    result = fgets(line, 1024, release);
 	    if (result) {
-		platform = line;
+		platform = g_strdup(line);
 	    }
 	    fclose(release);
 	}
     } else {
 	argv_ptr = g_ptr_array_new();
-
 	g_ptr_array_add(argv_ptr, UNAME_PATH);
 	g_ptr_array_add(argv_ptr, "-s");
 	g_ptr_array_add(argv_ptr, NULL);
 	uname = get_first_line(argv_ptr);
-	if (uname) {
-	    if (strncmp(uname, "SunOS", 5) == 0) {
-		FILE *release = fopen("/etc/release", "r");
-		distro = "Solaris";
-		if (release) {
-		    char *result;
-		    result = fgets(line, 1024, release);
-		    if (result) {
-			platform = line;
-		    }
+	g_ptr_array_free(argv_ptr, TRUE);
+	if (uname && strncmp(uname, "SunOS", 5) == 0) {
+	    FILE *release = fopen("/etc/release", "r");
+	    distro = g_strdup("Solaris");
+	    if (release) {
+		char *result;
+		result = fgets(line, 1024, release);
+		if (result) {
+		    platform = g_strdup(line);
 		}
 		fclose(release);
 	    }
-	    amfree(uname);
+	} else if (uname && strlen(uname) >= 3 &&
+		   g_strcasecmp(uname+strlen(uname)-3, "bsd") == 0) {
+	    distro = g_strdup(uname);
+	    argv_ptr = g_ptr_array_new();
+            g_ptr_array_add(argv_ptr, UNAME_PATH);
+            g_ptr_array_add(argv_ptr, "-r");
+            g_ptr_array_add(argv_ptr, NULL);
+            platform = get_first_line(argv_ptr);
+            g_ptr_array_free(argv_ptr, TRUE);
+	} else if (!stat("/usr/bin/sw_vers", &stat_buf)) {
+	    argv_ptr = g_ptr_array_new();
+	    g_ptr_array_add(argv_ptr, "/usr/bin/sw_vers");
+	    g_ptr_array_add(argv_ptr, "-productName");
+	    g_ptr_array_add(argv_ptr, NULL);
+	    productName = get_first_line(argv_ptr);
+	    g_ptr_array_free(argv_ptr, TRUE);
+	    argv_ptr = g_ptr_array_new();
+	    g_ptr_array_add(argv_ptr, "/usr/bin/sw_vers");
+	    g_ptr_array_add(argv_ptr, "-productVersion");
+	    g_ptr_array_add(argv_ptr, NULL);
+	    productVersion = get_first_line(argv_ptr);
+	    g_ptr_array_free(argv_ptr, TRUE);
+	    if (productName && productVersion &&
+		!g_str_equal(productName, "unknown") &&
+		!g_str_equal(productVersion, "unknown")) {
+		distro = g_strdup("mac");
+		platform = g_strdup_printf("%s %s", productVersion, productVersion);
+	    }
 	}
-	g_ptr_array_free(argv_ptr, TRUE);
+	amfree(uname);
+
     }
 
     if (!distro) {
-	distro = "Unknown";
+	distro = g_strdup("Unknown");
     }
     if (!platform) {
-	platform = "Unknown";
+	platform = g_strdup("Unknown");
     }
     if (platform[strlen(platform) -1] == '\n') {
 	platform[strlen(platform) -1] = '\0';
     }
     g_fprintf(stdout, "OK distro %s\n", distro);
     g_fprintf(stdout, "OK platform %s\n", platform);
+
+    amfree(distro);
+    amfree(platform);
+    amfree(productName);
+    amfree(productVersion);
 }

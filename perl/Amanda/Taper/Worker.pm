@@ -1,8 +1,9 @@
-# Copyright (c) 2009, 2010 Zmanda Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -38,6 +39,7 @@ use warnings;
 
 package Amanda::Taper::Worker;
 
+use Carp;
 use POSIX qw( :errno_h );
 use Amanda::Changer;
 use Amanda::Config qw( :getconf config_dir_relative );
@@ -113,7 +115,8 @@ sub new {
 # called when the scribe is fully started up and ready to go
 sub _scribe_started_cb {
     my $self = shift;
-    my ($err) = @_;
+    my $err  = shift;
+    my $allow_take_scribe_from = shift;
 
     if ($err) {
 	$self->{'controller'}->{'proto'}->send(Amanda::Taper::Protocol::TAPE_ERROR,
@@ -126,7 +129,8 @@ sub _scribe_started_cb {
 
     } else {
 	$self->{'controller'}->{'proto'}->send(Amanda::Taper::Protocol::TAPER_OK,
-		worker_name => $self->{'worker_name'});
+		worker_name => $self->{'worker_name'},
+		allow_take_scribe_from => $allow_take_scribe_from?"ALLOW-TAKE-SCRIBE-FROM":"NO-TAKE-SCRIBE-FROM");
 	$self->{'state'} = "idle";
     }
 }
@@ -215,13 +219,23 @@ sub TAKE_SCRIBE_FROM {
     delete $worker1->{'scribe'};
     $worker1->{'state'} = 'error';
     $scribe->quit(finished_cb => sub {});
+    $scribe1->{'cancelled'} = 0;
  }
 
 sub DONE {
     my $self = shift;
     my ($msgtype, %params) = @_;
 
-    $self->_assert_in_state("writing") or return;
+    if (!defined($self->{'handle'}) or $params{'handle'} ne $self->{'handle'}) {
+	# ignore message for previous handle
+	return;
+    }
+
+    if (defined $self->{'dumper_status'}) {
+	# ignore duplicate message
+	return
+    }
+
     $self->{'dumper_status'} = "DONE";
     $self->{'orig_kb'} = $params{'orig_kb'};
     if (defined $self->{'result'}) {
@@ -233,11 +247,30 @@ sub FAILED {
     my $self = shift;
     my ($msgtype, %params) = @_;
 
-    $self->_assert_in_state("writing") or return;
+    if (!defined($self->{'handle'}) or $params{'handle'} ne $self->{'handle'}) {
+	# ignore message for previous handle
+	return;
+    }
+
+    if (defined $self->{'dumper_status'}) {
+	# ignore duplicate message
+	return
+    }
 
     $self->{'dumper_status'} = "FAILED";
-    if (defined $self->{'result'}) {
+    if (defined $self->{'header_xfer'}) {
+	$self->{'header_xfer'}->cancel();
+    } elsif (defined $self->{'result'}) {
 	$self->result_cb(undef);
+    } elsif (!defined $self->{'scribe'}->{'xdt'}) {
+	# ignore, the dump is already cancelled or not yet started.
+    } elsif (!defined $self->{'scribe'}->{'xfer'}) {
+	# ignore, the dump is already cancelled or not yet started.
+    } else { # Abort the dump
+	push @{$self->{'input_errors'}}, "dumper failed";
+	$self->{'scribe'}->cancel_dump(
+		xfer => $self->{'scribe'}->{'xfer'},
+		dump_cb => $self->{'dump_cb'});
     }
 }
 
@@ -257,7 +290,7 @@ sub result_cb {
     my $logtype;
 
     if ($params{'result'} eq 'DONE') {
-	if (!$self->{'doing_port_write'} or $self->{'dumper_status'} eq "DONE") {
+	if ($self->{'dumper_status'} eq "DONE") {
 	    $msgtype = Amanda::Taper::Protocol::DONE;
 	    $logtype = $L_DONE;
 	} else {
@@ -288,7 +321,7 @@ sub result_cb {
     my $stats = make_stats($params{'size'}, $params{'total_duration'}, $self->{'orig_kb'});
 
     # consider this a config-derived failure only if there were no errors
-    my $failure_from = (@{$params{'device_errors'}})?  'error' : 'config';
+    my $failure_from = (defined $params{'config_denial_message'})?  'config' : 'error';
 
     my @all_messages = (@{$params{'device_errors'}}, @{$self->{'input_errors'}});
     push @all_messages, $params{'config_denial_message'} if $params{'config_denial_message'};
@@ -333,7 +366,7 @@ sub result_cb {
 	$msg_params{'taper'} = 'TAPE-ERROR';
 	$msg_params{'tapererr'} = join("; ", @{$params{'device_errors'}});
     } elsif ($params{'config_denial_message'}) {
-	$msg_params{'taper'} = 'TAPE-ERROR';
+	$msg_params{'taper'} = 'TAPE-CONFIG';
 	$msg_params{'tapererr'} = $params{'config_denial_message'};
     } else {
 	$msg_params{'taper'} = 'TAPE-GOOD';
@@ -409,6 +442,14 @@ sub scribe_notif_new_tape {
     }
 }
 
+sub scribe_ready {
+    my $self = shift;
+    my %params = @_;
+
+    $self->{'controller'}->{'proto'}->send(Amanda::Taper::Protocol::READY,
+	handle => $self->{'handle'});
+}
+
 sub scribe_notif_part_done {
     my $self = shift;
     my %params = @_;
@@ -448,6 +489,7 @@ sub scribe_notif_log_info {
     my $self = shift;
     my %params = @_;
 
+    debug("$params{'message'}");
     log_add($L_INFO, "$params{'message'}");
 }
 
@@ -488,6 +530,7 @@ sub create_status_file {
 	my $size = $self->{scribe}->get_bytes_written();
 	seek $self->{status_fh}, 0, 0;
 	print {$self->{status_fh}} $size;
+	truncate $self->{status_fh}, length($size);
 	$self->{status_fh}->flush();
     });
 }
@@ -496,7 +539,6 @@ sub send_port_and_get_header {
     my $self = shift;
     my ($finished_cb) = @_;
 
-    my $header_xfer;
     my ($xsrc, $xdst);
     my $errmsg;
 
@@ -516,8 +558,8 @@ sub send_port_and_get_header {
 	($xsrc, $xdst) = (
 	    Amanda::Xfer::Source::DirectTCPListen->new(),
 	    Amanda::Xfer::Dest::Buffer->new(0));
-	$header_xfer = Amanda::Xfer->new([$xsrc, $xdst]);
-	$header_xfer->start($steps->{'header_xfer_xmsg_cb'});
+	$self->{'header_xfer'} = Amanda::Xfer->new([$xsrc, $xdst]);
+	$self->{'header_xfer'}->start($steps->{'header_xfer_xmsg_cb'});
 
 	my $header_addrs = $xsrc->get_addrs();
 	my $header_port = $header_addrs->[0][1];
@@ -549,7 +591,7 @@ sub send_port_and_get_header {
 	my $hdr_buf = $xdst->get();
 
 	# close stuff up
-	$header_xfer = $xsrc = $xdst = undef;
+	$self->{'header_xfer'} = $xsrc = $xdst = undef;
 
 	if (!defined $hdr_buf) {
 	    return $finished_cb->("Got empty header");
@@ -567,7 +609,10 @@ sub send_port_and_get_header {
 sub setup_and_start_dump {
     my $self = shift;
     my ($msgtype, %params) = @_;
+    my %splitting_args;
     my %get_xfer_dest_args;
+
+    $self->{'dump_cb'} = $params{'dump_cb'};
 
     # setting up the dump is a bit complex, due to the requirements of
     # a directtcp port_write.  This function:
@@ -592,7 +637,7 @@ sub setup_and_start_dump {
 	    (my $err = $self->{'scribe'}->check_data_path($params{'data_path'}))) {
 	    return $params{'dump_cb'}->(
 		result => "FAILED",
-		device_errors => [ ['error', "$err"] ],
+		device_errors => [ 'error', "$err" ],
 		size => 0,
 		duration => 0.0,
 		total_duration => 0);
@@ -602,11 +647,11 @@ sub setup_and_start_dump {
 
     step process_args => sub {
 	# extract the splitting-related parameters, stripping out empty strings
-	my %splitting_args = map {
-	    ($params{$_} ne '')? ($_, $params{$_}) : ()
+	%splitting_args = map {
+	    (defined $params{$_} && $params{$_} ne '')? ($_, $params{$_}) : ()
 	} qw(
 	    dle_tape_splitsize dle_split_diskbuffer dle_fallback_splitsize dle_allow_split
-	    part_size part_cache_type part_cache_dir part_cache_max_size
+	    part_size part_cache_type part_cache_dir part_cache_max_size data_path
 	);
 
 	# convert numeric values to BigInts
@@ -615,9 +660,21 @@ sub setup_and_start_dump {
 		if (exists $splitting_args{$_});
 	}
 
+	# we've started the xfer now, but the destination won't actually write
+	# any data until we call start_dump.  And we'll need a device for that.
+
+	$self->{'scribe'}->wait_device(finished_cb => $steps->{'got_device'});
+    };
+
+    step got_device => sub {
+	my ($err) = @_;
+
+	if ($err) {
+	    debug("got_device failed: $err");
+	}
 	my $device = $self->{'scribe'}->get_device();
 	if (!defined $device) {
-	    die "no device is available to create an xfer_dest";
+	    confess "no device is available to create an xfer_dest";
 	}
 	$splitting_args{'leom_supported'} = $device->property_get("leom");
 	# and convert those to get_xfer_dest args
@@ -671,7 +728,7 @@ sub setup_and_start_dump {
 	    }
         });
 
-	# we've started the xfer now, but the destination won't actually write
+	# we've found a device, but the destination won't actually write
 	# any data until we call start_dump.  And we'll need a header for that.
 
 	$steps->{'get_header'}->();
@@ -685,12 +742,19 @@ sub setup_and_start_dump {
 	    # getting the header is easy for FILE-WRITE..
 	    my $hdr = $self->{'header'} = Amanda::Holding::get_header($params{'filename'});
 
+	    if (!defined $hdr || $hdr->{'type'} != $Amanda::Header::F_DUMPFILE) {
+		confess("Could not read header from '$params{filename}'");
+	    }
+
 	    # stip out header fields we don't need
 	    $hdr->{'cont_filename'} = '';
 
-	    if (!defined $hdr || $hdr->{'type'} != $Amanda::Header::F_DUMPFILE) {
-		die("Could not read header from '$params{filename}'");
+	    if ($self->{'header'}->{'is_partial'}) {
+		$self->{'dumper_status'} = "FAILED";
+	    } else {
+		$self->{'dumper_status'} = "DONE";
 	    }
+
 	    $steps->{'start_dump'}->(undef);
 	} else {
 	    # ..but quite a bit harder for PORT-WRITE; this method will send the
@@ -706,6 +770,11 @@ sub setup_and_start_dump {
         $self->_assert_in_state("getting_header") or return;
         $self->{'state'} = 'writing';
 
+	# abort if we already got a device_errors
+	if (@{$self->{'scribe'}->{'device_errors'}}) {
+	    $self->{'scribe'}->abort_setup(dump_cb => $params{'dump_cb'});
+	    return;
+	}
         # if $err is set, cancel the dump, treating it as a input error
         if ($err) {
 	    push @{$self->{'input_errors'}}, $err;
@@ -720,7 +789,7 @@ sub setup_and_start_dump {
             or $hdr->{'name'} ne $params{'hostname'}
             or $hdr->{'disk'} ne $params{'diskname'}
 	    or $hdr->{'datestamp'} ne $params{'datestamp'}) {
-            die("Header of dumpfile does not match command from driver");
+            confess("Header of dumpfile does not match command from driver");
         }
 
 	# start producing status

@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -29,6 +30,33 @@
 #include "amar.h"
 %}
 
+/*
+ * Documentation Macro
+ */
+
+%define constant_pod(DESCRIPTION, FORALL_FN)
+%perlcode %{
+
+require Amanda::Config::FoldingHash;
+
+=pod
+
+DESCRIPTION: amglue_constants_list(FORALL_FN)
+
+=cut
+%}
+%enddef
+
+#define FOR_ALL_AMAR_ATTR(APPLY)\
+APPLY(AMAR_ATTR_FILENAME) \
+APPLY(AMAR_ATTR_EOF) \
+APPLY(AMAR_ATTR_GENERIC_DATA) \
+APPLY(AMAR_ATTR_RMAN_DATA)
+
+amglue_add_enum_tag_fns(amar_attr);
+amglue_add_constants(FOR_ALL_AMAR_ATTR, amar_attr);
+constant_pod(Amar default attribute, FOR_ALL_AMAR_ATTR)
+
 %{
 /* Support code (not directly available from perl) */
 
@@ -40,14 +68,17 @@ typedef struct perl_read_data_s {
     SV *user_data;
     SV *file_start_sub;
     SV *file_finish_sub;
+    SV *done_sub;
 
     amar_attr_handling_t *handling_array;
+    amar_t *archive;
+    GError *error;
 } perl_read_data_t;
 
 static gboolean
 read_start_file_cb(
 	gpointer user_data,
-	uint16_t filenum,
+	guint16  filenum,
 	gpointer filename,
 	gsize filename_len,
 	gboolean *ignore,
@@ -97,15 +128,20 @@ read_start_file_cb(
     FREETMPS;
     LEAVE;
 
-    if (SvTRUE(ERRSV))
+    if (SvTRUE(ERRSV)) {
+	if (dat && dat->archive) {
+	    amar_set_error(dat->archive, SvPV_nolen(ERRSV));
+	}
+	POPs;
 	return FALSE;
+    }
     return TRUE;
 }
 
 static gboolean
 read_finish_file_cb(
 	gpointer user_data,
-	uint16_t filenum,
+	guint16  filenum,
 	gpointer *file_data,
 	gboolean truncated)
 {
@@ -129,17 +165,61 @@ read_finish_file_cb(
     FREETMPS;
     LEAVE;
 
-    if (SvTRUE(ERRSV))
+    if (SvTRUE(ERRSV)) {
+	if (dat && dat->archive) {
+	    amar_set_error(dat->archive, SvPV_nolen(ERRSV));
+	}
+	POPs;
 	return FALSE;
+    }
     return TRUE;
+}
+
+static gboolean
+read_done_cb(
+    gpointer  user_data,
+    GError   *error)
+{
+    dSP;
+    perl_read_data_t *dat = user_data;
+    gboolean rv = TRUE;
+
+    g_assert(dat->done_sub != NULL);
+
+    ENTER;
+    SAVETMPS;
+
+    PUSHMARK(SP);
+    if (dat && dat->error && dat->error->message) {
+	XPUSHs(sv_2mortal(newSVpv(dat->error->message, 0)));
+    } else if (error && error->message) {
+	XPUSHs(sv_2mortal(newSVpv(error->message, 0)));
+    }
+    PUTBACK;
+
+    call_sv(dat->done_sub, G_EVAL|G_DISCARD);
+
+    SPAGAIN;
+
+    if (SvTRUE(ERRSV)) {
+	fprintf(stderr,"read_done failed: %s", SvPV_nolen(ERRSV));
+	POPs;
+	rv = FALSE;
+    }
+
+    PUTBACK;
+    FREETMPS;
+    LEAVE;
+
+    return rv;
 }
 
 static gboolean
 read_frag_cb(
 	gpointer user_data,
-	uint16_t filenum,
+	guint16  filenum,
 	gpointer file_data,
-	uint16_t attrid,
+	guint16  attrid,
 	gpointer attrid_data,
 	gpointer *attr_data,
 	gpointer data,
@@ -193,8 +273,11 @@ read_frag_cb(
     FREETMPS;
     LEAVE;
 
-    if (SvTRUE(ERRSV))
+    if (SvTRUE(ERRSV)) {
+	amar_set_error(dat->archive, SvPV_nolen(ERRSV));
+	POPs;
 	return FALSE;
+    }
     return TRUE;
 }
 
@@ -226,14 +309,22 @@ is_number(char *str, int len, int *result)
 /* Rename all of the below wrapper functions (suffixed with '_') for
  * consumption by perl */
 %rename(amar_new) amar_new_;
+%rename(amar_size) amar_size_;
 %rename(amar_close) amar_close_;
 %rename(amar_new_file) amar_new_file_;
+%rename(amar_file_size) amar_file_size_;
 %rename(amar_file_close) amar_file_close_;
 %rename(amar_new_attr) amar_new_attr_;
+%rename(amar_attr_size) amar_attr_size_;
 %rename(amar_attr_close) amar_attr_close_;
 %rename(amar_attr_add_data_buffer) amar_attr_add_data_buffer_;
 %rename(amar_attr_add_data_fd) amar_attr_add_data_fd_;
+%rename(amar_attr_add_data_fd_in_thread) amar_attr_add_data_fd_in_thread_;
 %rename(amar_read) amar_read_;
+%rename(set_amar_read_cb) set_amar_read_cb_;
+%rename(amar_read_to) amar_read_to_;
+%rename(amar_stop_read) amar_stop_read_;
+%rename(amar_start_read) amar_start_read_;
 
 /* typemaps for the below */
 %apply (char *STRING, int LENGTH) { (char *filename, gsize filename_len) };
@@ -280,6 +371,10 @@ amar_t *amar_new_(int fd, char *modestr) {
     return NULL;
 }
 
+off_t amar_size_(amar_t *archive) {
+    return amar_size(archive);
+}
+
 void amar_close_(amar_t *arch) {
     GError *error = NULL;
     if (!amar_close(arch, &error))
@@ -298,6 +393,10 @@ amar_new_file_(amar_t *arch, char *filename, gsize filename_len, off_t *want_pos
 
     croak_gerror(AMANDA_ARCHIVE_ERROR_DOMAIN, &error);
     return NULL;
+}
+
+off_t amar_file_size_(amar_file_t *file) {
+    return amar_file_size(file);
 }
 
 void amar_file_close_(amar_file_t *file) {
@@ -321,6 +420,10 @@ amar_new_attr_(amar_file_t *file, guint16 attrid) {
     return NULL;
 }
 
+off_t amar_attr_size_(amar_attr_t *attr) {
+    return amar_attr_size(attr);
+}
+
 void amar_attr_close_(amar_attr_t *attr) {
     GError *error = NULL;
     if (!amar_attr_close(attr, &error))
@@ -333,10 +436,19 @@ void amar_attr_add_data_buffer_(amar_attr_t *attr, char *buffer, gsize size, gbo
 	croak_gerror(AMANDA_ARCHIVE_ERROR_DOMAIN, &error);
 }
 
-size_t
+off_t
 amar_attr_add_data_fd_(amar_attr_t *attr, int fd, gboolean eoa) {
     GError *error = NULL;
-    size_t rv = amar_attr_add_data_fd(attr, fd, eoa, &error);
+    off_t rv = amar_attr_add_data_fd(attr, fd, eoa, &error);
+    if (rv < 0)
+	croak_gerror(AMANDA_ARCHIVE_ERROR_DOMAIN, &error);
+    return rv;
+}
+
+off_t
+amar_attr_add_data_fd_in_thread_(amar_attr_t *attr, int fd, gboolean eoa) {
+    GError *error = NULL;
+    off_t rv = amar_attr_add_data_fd_in_thread(attr, fd, eoa, &error);
     if (rv < 0)
 	croak_gerror(AMANDA_ARCHIVE_ERROR_DOMAIN, &error);
     return rv;
@@ -443,6 +555,15 @@ void amar_read_(amar_t *archive, SV *params_hashref) {
 	    continue;
 	}
 
+	if (key_compare(key, "done", keylen)) {
+	    SV *val = hv_iterval(params, param);
+	    if (!SvROK(val) || SvTYPE(SvRV(val)) != SVt_PVCV)
+		croak("Expected a CODEREF for done");
+	    dat->done_sub = val;
+	    SvREFCNT_inc(val);
+	    continue;
+	}
+
 	if (key_compare(key, "user_data", keylen)) {
 	    SV *val = hv_iterval(params, param);
 	    dat->user_data = val;
@@ -459,6 +580,7 @@ void amar_read_(amar_t *archive, SV *params_hashref) {
     success = amar_read(archive, dat, dat->handling_array + hdl_idx,
 	dat->file_start_sub? read_start_file_cb : NULL,
 	dat->file_finish_sub? read_finish_file_cb : NULL,
+	dat->done_sub? read_done_cb : NULL,
 	&error);
 
     /* now unreference and free everything we referenced earlier */
@@ -466,6 +588,8 @@ void amar_read_(amar_t *archive, SV *params_hashref) {
 	SvREFCNT_dec(dat->file_start_sub);
     if (dat->file_finish_sub)
 	SvREFCNT_dec(dat->file_finish_sub);
+    if (dat->done_sub)
+	SvREFCNT_dec(dat->done_sub);
     if (dat->user_data && dat->user_data != &PL_sv_undef)
 	SvREFCNT_dec(dat->user_data);
 
@@ -486,6 +610,181 @@ void amar_read_(amar_t *archive, SV *params_hashref) {
 	else
 	    croak(NULL);
     }
+}
+
+void amar_read_to_(
+    amar_t   *archive,
+    guint16   filenum,
+    guint16   attrid,
+    int       fd)
+{
+    amar_read_to(archive, filenum, attrid, fd);
+}
+
+void amar_stop_read_(
+    amar_t   *archive)
+{
+    amar_stop_read(archive);
+}
+
+void amar_start_read_(
+    amar_t   *archive)
+{
+    amar_start_read(archive);
+}
+
+void destroy_read_cb(perl_read_data_t *dat)
+{
+    if (dat->file_start_sub)
+	SvREFCNT_dec(dat->file_start_sub);
+    if (dat->file_finish_sub)
+	SvREFCNT_dec(dat->file_finish_sub);
+    if (dat->done_sub)
+	SvREFCNT_dec(dat->done_sub);
+    if (dat->user_data && dat->user_data != &PL_sv_undef)
+	SvREFCNT_dec(dat->user_data);
+
+//    for (hdl_idx = 0; hdl_idx <= maxhandlers; hdl_idx++) {
+//	if (dat->handling_array[hdl_idx].attrid_data)
+//	    SvREFCNT_dec(dat->handling_array[hdl_idx].attrid_data);
+//    }
+
+    g_free(dat->handling_array);
+    g_free(dat);
+}
+
+perl_read_data_t *set_amar_read_cb_(amar_t *archive, SV *params_hashref)
+{
+    perl_read_data_t *dat = g_new0(perl_read_data_t, 1);
+    HV *params;
+    HE *param;
+    I32 len;
+    int maxhandlers;
+    int hdl_idx;
+    dat->archive = archive;
+
+    /* make sure we got a hashref */
+    if (!SvROK(params_hashref) || SvTYPE(SvRV(params_hashref)) != SVt_PVHV)
+	croak("read() expects a single hashref");
+    params = (HV *)SvRV(params_hashref);
+    len = hv_iterinit(params);
+
+    maxhandlers = hdl_idx = len;
+    dat->handling_array = g_new0(amar_attr_handling_t, len+1);
+
+    /* loop through the parameters */
+    while ((param = hv_iternext(params))) {
+	I32 keylen;
+	char *key = hv_iterkey(param, &keylen);
+	int attrid;
+
+	/* if it's a number, it's handling information for an attrid */
+	if (is_number(key, keylen, &attrid)) {
+	    SV *val = hv_iterval(params, param);
+	    SV *coderef;
+	    UV bufsize = 0;
+	    int i;
+
+	    if (!SvROK(val)) goto croak_hdl;
+
+	    switch (SvTYPE(SvRV(val))) {
+		case SVt_PVCV:
+		    coderef = val;
+		    break;
+
+		case SVt_PVAV: {
+		    AV *arr = (AV *)SvRV(val);
+		    SV **svp;
+
+		    if (av_len(arr) != 1) /* av_len == largest index, not length */
+			goto croak_hdl;
+
+		    /* get the bufsize */
+		    svp = av_fetch(arr, 0, 0);
+		    if (!SvIOK(*svp))
+			goto croak_hdl;
+		    bufsize = SvUV(*svp);
+
+		    /* and the coderef */
+		    svp = av_fetch(arr, 1, 0);
+		    if (!SvROK(*svp) || SvTYPE(SvRV(*svp)) != SVt_PVCV)
+			goto croak_hdl;
+		    coderef = *svp;
+		    break;
+		}
+
+		default:
+		    goto croak_hdl;
+	    }
+
+	    /* fill in the handling array, putting attrid 0 at the end, and
+	     * filling in entries backward from there */
+	    i = (attrid == 0)? maxhandlers : --hdl_idx;
+	    dat->handling_array[i].attrid = attrid;
+	    dat->handling_array[i].min_size = bufsize;
+	    dat->handling_array[i].callback = read_frag_cb;
+	    dat->handling_array[i].attrid_data = coderef;
+	    SvREFCNT_inc(coderef);
+	    continue;
+
+	croak_hdl:
+	    croak("Expected CODEREF or [ MIN_SIZE, CODEREF ] for attrid %d", attrid);
+	}
+
+#define key_compare(key, val, keylen) \
+    (keylen == sizeof(val)-1) && (0 == strncmp(key, val, keylen))
+
+	if (key_compare(key, "file_start", keylen)) {
+	    SV *val = hv_iterval(params, param);
+	    if (!SvROK(val) || SvTYPE(SvRV(val)) != SVt_PVCV)
+		croak("Expected a CODEREF for file_start");
+	    dat->file_start_sub = val;
+	    SvREFCNT_inc(val);
+	    continue;
+	}
+
+	if (key_compare(key, "file_finish", keylen)) {
+	    SV *val = hv_iterval(params, param);
+	    if (!SvROK(val) || SvTYPE(SvRV(val)) != SVt_PVCV)
+		croak("Expected a CODEREF for file_finish");
+	    dat->file_finish_sub = val;
+	    SvREFCNT_inc(val);
+	    continue;
+	}
+
+	if (key_compare(key, "done", keylen)) {
+	    SV *val = hv_iterval(params, param);
+	    if (!SvROK(val) || SvTYPE(SvRV(val)) != SVt_PVCV)
+		croak("Expected a CODEREF for file_finish");
+	    dat->done_sub = val;
+	    SvREFCNT_inc(val);
+	    continue;
+	}
+
+	if (key_compare(key, "user_data", keylen)) {
+	    SV *val = hv_iterval(params, param);
+	    dat->user_data = val;
+	    SvREFCNT_inc(val);
+	    continue;
+	}
+#undef key_compare
+	croak("Invalid parameter named '%*s'", (int)keylen, key);
+    }
+
+    if (!dat->user_data)
+	dat->user_data = &PL_sv_undef;
+
+    set_amar_read_cb(archive, dat, dat->handling_array + hdl_idx,
+	dat->file_start_sub? read_start_file_cb : NULL,
+	dat->file_finish_sub? read_finish_file_cb : NULL,
+	dat->done_sub? read_done_cb : NULL,
+	&dat->error);
+
+
+    if (dat->error)
+	croak_gerror(AMANDA_ARCHIVE_ERROR_DOMAIN, &dat->error);
+
+    return dat;
 }
 
 %}
@@ -510,16 +809,33 @@ sub new {
     return bless (\$arch, $class);
 }
 
+my $dat = undef;
 sub close {
     my $self = shift;
     if ($$self) {
 	Amanda::Archive::amar_close($$self);
+	if ($dat) {
+	    Amanda::Archive::destroy_read_cb($dat);
+	    $dat = undef;
+	}
 	$$self = undef;
     }
 }
 
+sub size {
+    my $self = shift;
+    if ($$self) {
+	return Amanda::Archive::amar_size($$self);
+    }
+    return 0;
+}
+
 sub DESTROY {
     my $self = shift;
+    if ($dat) {
+	Amanda::Archive::destroy_read_cb($dat);
+	$dat = undef;
+    }
     $self->close();
 }
 
@@ -536,6 +852,35 @@ sub Amanda::Archive::Archive::read {
     Amanda::Archive::amar_read($$self, \%h);
 }
 
+sub Amanda::Archive::Archive::set_read_cb {
+    my $self = shift;
+    die "Archive is not open" unless ($$self);
+    # pass a hashref to the C code
+    my %h = @_;
+    $dat = Amanda::Archive::set_amar_read_cb($$self, \%h);
+}
+
+sub Amanda::Archive::Archive::read_to {
+    my $self = shift;
+    die "Archive is not open" unless ($$self);
+    my $filenum  = shift;
+    my $attrid   = shift;
+    my $fd       = shift;
+    Amanda::Archive::amar_read_to($$self, $filenum, $attrid, $fd);
+}
+
+sub Amanda::Archive::Archive::stop_read {
+    my $self = shift;
+    die "Archive is not open" unless ($$self);
+    Amanda::Archive::amar_stop_read($$self);
+}
+
+sub Amanda::Archive::Archive::start_read {
+    my $self = shift;
+    die "Archive is not open" unless ($$self);
+    Amanda::Archive::amar_start_read($$self);
+}
+
 package Amanda::Archive::File;
 
 sub new {
@@ -549,6 +894,14 @@ sub new {
 	my $file = Amanda::Archive::amar_new_file($$arch, $filename, $want_offset);
 	return bless([ $file, $arch ], $class);
     }
+}
+
+sub size {
+    my $self = shift;
+    if ($self->[0]) {
+	return Amanda::Archive::amar_file_size($self->[0]);
+    }
+    return 0;
 }
 
 sub close {
@@ -578,6 +931,14 @@ sub new {
     return bless ([$attr, $file], $class);
 }
 
+sub size {
+    my $self = shift;
+    if ($self->[0]) {
+	return Amanda::Archive::amar_attr_size($self->[0]);
+    }
+    return 0;
+}
+
 sub close {
     my $self = shift;
     if ($self->[0]) {
@@ -601,5 +962,11 @@ sub add_data_fd {
     my ($self, $fd, $eoa) = @_;
     die "Attr is not open" unless ($self->[0]);
     return Amanda::Archive::amar_attr_add_data_fd($self->[0], $fd, $eoa);
+}
+
+sub add_data_fd_in_thread {
+    my ($self, $fd, $eoa) = @_;
+    die "Attr is not open" unless ($self->[0]);
+    return Amanda::Archive::amar_attr_add_data_fd_in_thread($self->[0], $fd, $eoa);
 }
 %}

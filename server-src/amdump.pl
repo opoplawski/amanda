@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2010 Zmanda Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -23,8 +24,9 @@ use warnings;
 
 use Getopt::Long;
 use POSIX qw(WIFEXITED WEXITSTATUS strftime);
+use File::Glob qw( :glob );
 
-use Amanda::Config qw( :init :getconf );
+use Amanda::Config qw( :init :getconf config_dir_relative );
 use Amanda::Util qw( :constants );
 use Amanda::Logfile qw( :logtype_t log_add );
 use Amanda::Debug qw( debug );
@@ -36,7 +38,7 @@ use Amanda::Paths;
 sub usage {
     my ($msg) = @_;
     print STDERR <<EOF;
-Usage: amdump <conf> [--no-taper] [--from-client] [-o configoption]* [host/disk]*
+Usage: amdump <conf> [--no-taper] [--from-client] [--exact-match] [-o configoption]* [host/disk]*
 EOF
     print STDERR "$msg\n" if $msg;
     exit 1;
@@ -49,12 +51,16 @@ my @config_overrides_opts;
 
 my $opt_no_taper = 0;
 my $opt_from_client = 0;
+my $opt_exact_match = 0;
+
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw(bundling));
 GetOptions(
     'version' => \&Amanda::Util::version_opt,
     'help|usage|?' => \&usage,
     'no-taper' => \$opt_no_taper,
     'from-client' => \$opt_from_client,
+    'exact-match' => \$opt_exact_match,
     'o=s' => sub {
 	push @config_overrides_opts, "-o" . $_[1];
 	add_config_override_opt($config_overrides, $_[1]);
@@ -78,14 +84,16 @@ Amanda::Util::finish_setup($RUNNING_AS_DUMPUSER);
 
 # useful info for below
 my @hostdisk = @ARGV;
-my $logdir = getconf($CNF_LOGDIR);
+my $logdir = config_dir_relative(getconf($CNF_LOGDIR));
 my @now = localtime;
 my $longdate = strftime "%a %b %e %H:%M:%S %Z %Y", @now;
 my $timestamp = strftime "%Y%m%d%H%M%S", @now;
 my $datestamp = strftime "%Y%m%d", @now;
 my $starttime_locale_independent = strftime "%Y-%m-%d %H:%M:%S %Z", @now;
 my $trace_log_filename = "$logdir/log";
-my $amdump_log_filename = "$logdir/amdump";
+my $amdump_log_pathname_default = "$logdir/amdump";
+my $amdump_log_pathname = "$logdir/amdump.$timestamp";
+my $amdump_log_filename = "amdump.$timestamp";
 my $exit_code = 0;
 my $amdump_log = \*STDERR;
 
@@ -121,12 +129,7 @@ sub run_subprocess {
     my $s = $? >> 8;
     debug("$proc exited with code $s");
     if ($?) {
-	if ($exit_code == 0) {
-	    debug("ignoring failing exit code $s from $proc");
-	} else {
-	    debug("recording failing exit code $s from $proc for amdump exit");
-	    $exit_code = $s;
-	}
+	$exit_code |= $s;
     }
 }
 
@@ -141,7 +144,7 @@ sub wait_for_hold {
 }
 
 sub bail_already_running {
-    my $msg = "An Amanda process is already running - please run amcleanup manually";
+    my $msg = "An Amanda process is already running - please run amcleanup if you wish to abort the current process and clean up open log files";
     debug($msg);
     amdump_log($msg);
 
@@ -163,7 +166,7 @@ EOF
 }
 
 sub do_amcleanup {
-    return unless -f $amdump_log_filename || -f $trace_log_filename;
+    return unless -f $amdump_log_pathname_default || -f $trace_log_filename;
 
     # logfiles are still around.  First, try an amcleanup -p to see if
     # the actual processes are already dead
@@ -171,7 +174,7 @@ sub do_amcleanup {
     run_subprocess("$sbindir/amcleanup", '-p', $config_name, @config_overrides_opts);
 
     # and check again
-    return unless -f $amdump_log_filename || -f $trace_log_filename;
+    return unless -f $amdump_log_pathname_default || -f $trace_log_filename;
 
     bail_already_running();
 }
@@ -197,8 +200,10 @@ sub start_logfiles {
     debug("beginning amdump log");
     $amdump_log = undef;
     # Must be opened in append so that all subprocess can write to it.
-    open($amdump_log, ">>", $amdump_log_filename)
-	or die("could not open amdump log file '$amdump_log_filename': $!");
+    open($amdump_log, ">>", $amdump_log_pathname)
+	or die("could not open amdump log file '$amdump_log_pathname': $!");
+    unlink $amdump_log_pathname_default;
+    symlink $amdump_log_filename, $amdump_log_pathname_default;
 }
 
 sub planner_driver_pipeline {
@@ -206,6 +211,7 @@ sub planner_driver_pipeline {
     my $driver = "$amlibexecdir/driver";
     my @no_taper = $opt_no_taper? ('--no-taper'):();
     my @from_client = $opt_from_client? ('--from-client'):();
+    my @exact_match = $opt_exact_match? ('--exact-match'):();
 
     check_exec($planner);
     check_exec($driver);
@@ -225,9 +231,10 @@ sub planner_driver_pipeline {
 	POSIX::close($wpipe);
 	POSIX::dup2(fileno($amdump_log), 2);
 	close($amdump_log);
-	exec $planner,
-	    # note that @no_taper must follow --starttime
-	    $config_name, '--starttime', $timestamp, @no_taper, @from_client, @config_overrides_opts, @hostdisk;
+	# note that @no_taper must follow --starttime
+	my @args = ($config_name, '--starttime', $timestamp, @no_taper, @from_client, @exact_match, @config_overrides_opts, @hostdisk);
+	debug("exec $planner " . join(' ', @args));
+	exec $planner, @args;
 	die "Could not exec $planner: $!";
     }
     debug(" planner: $pl_pid");
@@ -243,8 +250,9 @@ sub planner_driver_pipeline {
 	POSIX::close($null);
 	POSIX::dup2(fileno($amdump_log), 2);
 	close($amdump_log);
-	exec $driver,
-	    $config_name, @no_taper, @from_client, @config_overrides_opts;
+	my @args = ($config_name, @no_taper, @from_client, @config_overrides_opts);
+	debug("exec $driver " . join(' ', @args));
+	exec $driver, @args;
 	die "Could not exec $driver: $!";
     }
     debug(" driver: $dr_pid");
@@ -289,15 +297,19 @@ sub trim_indexes {
 sub roll_amdump_logs {
     debug("renaming amdump log and trimming old amdump logs (beyond tapecycle+2)");
 
-    # rename all the way along the tapecycle
-    my $days = getconf($CNF_TAPECYCLE) + 2;
-    for (my $i = $days-1; $i >= 1; $i--) {
-	next unless -f "$amdump_log_filename.$i";
-	rename("$amdump_log_filename.$i", "$amdump_log_filename.".($i+1));
-    }
+    unlink "$amdump_log_pathname_default.1";
+    rename $amdump_log_pathname_default, "$amdump_log_pathname_default.1";
 
-    # now swap the current logfile in
-    rename("$amdump_log_filename", "$amdump_log_filename.1");
+    my @files = grep { !/^\./ && -f "$_"} <$logdir/amdump.*>;
+    foreach my $file (@files) {
+	my $log = $file;
+	$log =~ s/amdump/log/;
+	$log .= ".0";
+	if ( -M $file > 30 and !-f $log) {
+	    unlink $file;
+	    debug("unlink $file");
+	}
+    }
 }
 
 # now do the meat of the amdump work; these operations are ported directly

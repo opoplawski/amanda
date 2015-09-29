@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -85,6 +86,18 @@ sub lookup_tapelabel {
 
     for my $tle (@{$self->{'tles'}}) {
 	return $tle if ($tle->{'label'} eq $label);
+    }
+
+    return undef;
+}
+
+sub lookup_by_barcode {
+    my $self = shift;
+    my ($barcode) = @_;
+
+    for my $tle (@{$self->{'tles'}}) {
+	return $tle if (defined $tle->{'barcode'} and
+			$tle->{'barcode'} eq $barcode);
     }
 
     return undef;
@@ -228,12 +241,14 @@ sub _read_tapelist {
     open(my $fh, "<", $self->{'filename'}) or return $self;
     while (my $line = <$fh>) {
 	my ($datestamp, $label, $reuse, $barcode, $meta, $blocksize, $comment)
-	    = $line =~ m/^([0-9]*)\s([^\s]*)\s(reuse|no-reuse)\s*(?:BARCODE:([^\s]*))?\s*(?:META:([^\s]*))?\s*(?:BLOCKSIZE:([^\s]*))?\s*(?:\#(.*))?$/mx;
-	next if !defined $datestamp; # silently filter out bogus lines
+	    = $line =~ m/^([0-9]+)\s*([^\s]*)\s*(?:(reuse|no-reuse))?\s*(?:BARCODE:([^\s]*))?\s*(?:META:([^\s]*))?\s*(?:BLOCKSIZE:([^\s]*))?\s*(?:\#(.*))?$/mx;
+	if (!defined $datestamp) {
+	    Amanda::Debug::critical("Bogus line in the tapelist ($self->{'filename'}) file: $line");
+	}
 	push @tles, {
 	    'datestamp' => $datestamp,
 	    'label' => $label,
-	    'reuse' => ($reuse eq 'reuse'),
+	    'reuse' => (!defined $reuse || $reuse eq 'reuse'),
 	    'barcode' => $barcode,
 	    'meta' => $meta,
 	    'blocksize' => $blocksize,
@@ -255,6 +270,17 @@ sub _read_tapelist {
 
     # and re-calculate the positions
     $self->_update_positions(\@tles);
+
+    # check for duplicate labels
+    my %labels;
+    for my $tle (@{$self->{'tles'}}) {
+	my $label = $tle->{'label'};
+	if (exists $labels{$label}) {
+	    debug("Duplicate label '$label' in tapelist file.");
+	    die("ERROR: Duplicate label '$label' in tapelist file.");
+	}
+	$labels{$label} = 1;
+    }
 }
 
 # update the 'position' key for each TLE
@@ -269,6 +295,7 @@ sub _update_positions {
 %}
 
 char *get_last_reusable_tape_label(int skip);
+%newobject list_new_tapes;
 char *list_new_tapes(int nb);
 
 /* C functions -- should be called *only* from within this module */

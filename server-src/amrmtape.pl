@@ -1,10 +1,11 @@
 #!@PERL@
 #
-# Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -47,26 +48,6 @@ my $changer_name;
 my $keep_label;
 my $verbose = 1;
 my $help;
-my $logdir;
-my $log_file;
-my $log_created = 0;
-
-sub die_handler {
-    if ($log_created == 1) {
-        unlink $log_file;
-        $log_created = 0;
-    }
-}
-$SIG{__DIE__} = \&die_handler;
-
-sub int_handler {
-    if ($log_created == 1) {
-        unlink $log_file;
-        $log_created = 0;
-    }
-    die "Interrupted\n";
-}
-$SIG{INT} = \&int_handler;
 
 sub usage() {
     print <<EOF
@@ -107,6 +88,8 @@ Amanda::Util::setup_application("amrmtape", "server", $CONTEXT_CMDLINE);
 
 my $config_overrides = new_config_overrides( scalar(@ARGV) + 1 );
 
+debug("Arguments: " . join(' ', @ARGV));
+Getopt::Long::Configure(qw{ bundling });
 my $opts_ok = GetOptions(
     'version' => \&Amanda::Util::version_opt,
     "changer=s" => \$changer_name,
@@ -147,26 +130,10 @@ if ($cfgerr_level >= $CFGERR_WARNINGS) {
 }
 
 Amanda::Util::finish_setup($RUNNING_AS_DUMPUSER);
-$logdir = config_dir_relative(getconf($CNF_LOGDIR));
-$log_file = "$logdir/log";
 
-if ($erase) {
-    # Check for log file existance
-    if (-e $log_file) {
-        `amcleanup -p $config_name`;
-    }
-
-    if (-e $log_file) {
-        local *LOG;
-        open(LOG,  $log_file);
-        my $info_line = <LOG>;
-        close LOG;
-        $info_line =~ /^INFO (.*) .* pid .*$/;
-        my $process_name = $1;
-        print "$process_name is running, or you must run amcleanup\n";
-        exit 1;
-    }
-}
+my $logdir = config_dir_relative(getconf($CNF_LOGDIR));
+my $logfile = "$logdir/log";
+my $logfile_exists = -e $logfile;
 
 # amadmin may later try to load this and will die if it has errors
 # load it now to catch the problem sooner (before we might erase data)
@@ -206,11 +173,12 @@ my $scrub_db = sub {
         $tapelist->write();
     }
 
-    my $tmp_curinfo_file = "$AMANDA_TMPDIR/curinfo-amrmtape-" . time();
+    my $tmp_curinfo_file = "$AMANDA_TMPDIR/curinfo-amrmtape-" . time() . "-" . $$;
     unless (open(AMADMIN, "$amadmin $config_name export |")) {
         die "Failed to execute $amadmin: $! $?";
     }
-    open(CURINFO, ">$tmp_curinfo_file");
+    open(CURINFO, ">$tmp_curinfo_file") or
+        die "Failed to open $tmp_curinfo_file for writing: $! $?";
 
     sub info_line($) {
         print CURINFO "$_[0]";
@@ -278,7 +246,7 @@ my $scrub_db = sub {
     unlink $tmp_curinfo_file;
     unlink $backup_tapelist_file;
 
-    if ($cleanup && !$dry_run) {
+    if ($cleanup && !$dry_run && !$logfile_exists && !-e $logfile) {
         if (system($amtrmlog, $config_name)) {
             die "$amtrmlog exited with non-zero while scrubbing logs: $! $?";
         }
@@ -292,12 +260,8 @@ my $scrub_db = sub {
 
 my $erase_volume = make_cb('erase_volume' => sub {
     if ($erase) {
-        $log_created = 1;
-        local *LOG;
-        open(LOG, ">$log_file");
-        print LOG "INFO amrmtape amrmtape pid $$\n";
-        close LOG;
 	my $chg = Amanda::Changer->new($changer_name, tapelist => $tapelist);
+	die $chg if $chg->isa("Amanda::Changer::Error");
 	$chg->load(
 	    'label' => $label,
 	    'res_cb' => sub {
@@ -305,6 +269,7 @@ my $erase_volume = make_cb('erase_volume' => sub {
 		die $err if $err;
 
                 my $dev = $resv->{'device'};
+		die $dev->error_or_status() if $dev->status != $DEVICE_STATUS_SUCCESS;
                 die "Can not erase $label because the device doesn't support this feature"
                     unless $dev->property_get('full_deletion');
 
@@ -346,10 +311,5 @@ my $erase_volume = make_cb('erase_volume' => sub {
 # kick things off
 $erase_volume->();
 Amanda::MainLoop::run();
-
-if ($log_created == 1) {
-    unlink $log_file;
-    $log_created = 0;
-}
 
 Amanda::Util::finish_application();

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -330,6 +331,9 @@ safe_env_full(char **add)
 	"PATH",
 #endif
 	"DISPLAY",
+#ifdef NEED_LD_LIBRARY_PATH_ENV
+	"LD_LIBRARY_PATH",
+#endif
 	NULL
     };
 

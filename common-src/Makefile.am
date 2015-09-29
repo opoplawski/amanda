@@ -5,7 +5,7 @@ include $(top_srcdir)/config/automake/scripts.am
 include $(top_srcdir)/config/automake/installperms.am
 include $(top_srcdir)/config/automake/precompile.am
 
-INCLUDES =      -I$(top_srcdir)/gnulib   
+INCLUDES =      -I$(top_srcdir)/gnulib
 
 AM_CFLAGS = $(AMANDA_WARNING_CFLAGS)
 AM_LDFLAGS = $(AMANDA_STATIC_LDFLAGS) $(AS_NEEDED_FLAGS)
@@ -19,6 +19,7 @@ LINTFLAGS=$(AMLINTFLAGS)
 
 libamanda_la_SOURCES =		\
 	alloc.c			\
+	am_sl.c			\
 	amfeatures.c		\
 	amflock.c		\
 	ipc-binary.c		\
@@ -40,12 +41,16 @@ libamanda_la_SOURCES =		\
 	security.c		\
 	security-util.c		\
 	simpleprng.c		\
-	sl.c			\
 	sockaddr-util.c		\
 	stream.c		\
 	tapelist.c		\
 	timestamp.c		\
 	util.c
+
+libamanda_la_SOURCES += amcrc32chw.c
+amcrc32chw.o: CFLAGS += $(SSE42_CFLAGS)
+amcrc32chw.lo: CFLAGS += $(SSE42_CFLAGS)
+
 # version.c is generated; see below
 nodist_libamanda_la_SOURCES = version.c
 
@@ -100,6 +105,7 @@ libamanda_la_LDFLAGS =  -release $(VERSION) $(AS_NEEDED_FLAGS)
 
 noinst_HEADERS =		\
 	amanda.h		\
+	amcrc32chw.h		\
 	amfeatures.h		\
 	ipc-binary.h		\
 	amxml.h			\
@@ -123,7 +129,7 @@ noinst_HEADERS =		\
 	security.h		\
 	security-util.h		\
 	simpleprng.h		\
-	sl.h			\
+	am_sl.h			\
 	sockaddr-util.h		\
 	stream.h		\
 	tapelist.h		\
@@ -145,6 +151,8 @@ EXTRA_PROGRAMS = genversion $(TEST_PROGS)
 genversion_SOURCES = genversion.c svn-info.h
 genversion_LDADD = $(libamanda_la_LIBADD)	\
 	../gnulib/libgnu.la
+
+genversion.$(OBJEXT): $(genversion_SOURCES) genversion.h
 
 genversion.h: $(top_builddir)/config.status
 	-rm -f $@ $@.new
@@ -211,7 +219,7 @@ libtestutils_la_SOURCES = \
 
 # automake-style tests
 
-TESTS = amflock-test event-test amsemaphore-test quoting-test \
+TESTS = amflock-test event-test amsemaphore-test crc32-test quoting-test \
 	ipc-binary-test hexencode-test fileheader-test match-test
 noinst_PROGRAMS = $(TESTS)
 
@@ -223,6 +231,9 @@ event_test_LDADD = libamanda.la libtestutils.la
 
 amsemaphore_test_SOURCES = amsemaphore-test.c
 amsemaphore_test_LDADD = libamanda.la libtestutils.la
+
+crc32_test_SOURCES = crc32-test.c
+crc32_test_LDADD = libamanda.la libtestutils.la
 
 quoting_test_SOURCES = quoting-test.c
 quoting_test_LDADD = libamanda.la libtestutils.la

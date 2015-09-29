@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -355,7 +356,7 @@ try_reading_fd(
 
     ar = amar_new(fd, O_RDONLY, &error);
     check_gerror(ar, error, "amar_new");
-    ok = amar_read(ar, &state, handling, file_start_cb, file_finish_cb, &error);
+    ok = amar_read(ar, &state, handling, file_start_cb, file_finish_cb, NULL, &error);
     if (ok || error)
 	check_gerror(ok, error, "amar_read");
     if (steps[state.curstep].kind != EXP_END)
@@ -391,7 +392,7 @@ try_reading_with_error(
     fd = open_temp(0);
     ar = amar_new(fd, O_RDONLY, &error);
     check_gerror(ar, error, "amar_new");
-    ok = amar_read(ar, &state, handling, file_start_cb, file_finish_cb, &error);
+    ok = amar_read(ar, &state, handling, file_start_cb, file_finish_cb, NULL, &error);
     check_gerror_matches(ok, error, message, "amar_read");
     amar_close(ar, NULL);
     close(fd);

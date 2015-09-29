@@ -1,9 +1,10 @@
 # vim:ft=perl
-# Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -435,8 +436,10 @@ sub _write_amanda_conf_subsection {
 	    $value = shift @values;
 	    if ($param eq "inherit") {
 		print $amanda_conf "$value\n";
-	    } else {
+	    } elsif (defined $value) {
 	        print $amanda_conf "$param $value\n";
+	    } else {
+	        print $amanda_conf "$param\n";
 	    }
 	}
 	print $amanda_conf "}\n";

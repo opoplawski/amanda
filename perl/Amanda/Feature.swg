@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -63,7 +64,9 @@ extern Set *am_string_to_feature(char *s);
 %newobject am_set_default_feature_set;
 extern Set *am_set_default_feature_set(void);
 %newobject am_init_feature_set;
-extern Set *am_init_feature_set(void);
+extern Set *am_init_feature_set();
+%newobject features;
+extern am_feature_t *am_features(Set *);
 
 %perlcode %{
 
@@ -88,6 +91,12 @@ sub Amanda::Feature::Set::mine {
     my $class = shift;
     return Amanda::Feature::am_init_feature_set();
 }
+
+sub Amanda::Feature::Set::features {
+    my $class = shift;
+    return Amanmda::Feature::features();
+}
+
 
 package Amanda::Feature;
 

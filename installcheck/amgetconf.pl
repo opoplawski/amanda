@@ -1,8 +1,9 @@
-# Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -216,7 +217,7 @@ is_deeply([sort(+split(qr/\n/, run_get('amgetconf', 'TESTCONF', 'device_property
 $testconf = Installcheck::Config->new();
 $testconf->add_tapetype("cassette", [ length => "32 k" ]);
 $testconf->add_tapetype("reel2reel", [ length => "1 M" ]);
-$testconf->add_tapetype("scotch", [ length => "500 bytes" ]); # (use a sharpie)
+$testconf->add_tapetype("scotch", [ length => "512000 bytes" ]);
 $testconf->add_dumptype("testdump", [ comment => '"testdump-dumptype"',
 				      auth => '"bsd"' ]);
 $testconf->add_dumptype("testdump1", [ inherit => 'testdump' ]);

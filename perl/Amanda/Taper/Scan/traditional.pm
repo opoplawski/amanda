@@ -1,8 +1,9 @@
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This library is free software; you can redistribute it and/or modify it
-# under the terms of the GNU Lesser General Public License version 2.1 as
-# published by the Free Software Foundation.
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+#* License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
 #
 # This library is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -193,6 +194,9 @@ sub stage_1 {
 	    if ($err->failed and $err->notfound) {
 		debug("Amanda::Taper::Scan::traditional oldest reusable volume not found");
 		return $self->stage_2($result_cb);
+	    } elsif ($err->failed and $err->invalid) {
+		debug("Amanda::Taper::Scan::traditional oldest reusable volume is in an invalid slot");
+		return $self->stage_2($result_cb);
 	    } else {
 		return $self->scan_result(error => $err,
 			res => $res, result_cb => $result_cb);
@@ -286,9 +290,9 @@ sub stage_2 {
 	my $loaded_current = $load_current;
 	$load_current = 0; # don't load current a second time
 
-	$self->_user_msg(search_result => 1, res => $res, err => $err);
 	# bail out immediately if the scan is complete
 	if ($err and $err->failed and $err->notfound) {
+	    $self->_user_msg(search_result => 1, res => $res, err => $err);
 	    # no error, no reservation -> end of the scan
             return $self->scan_result(result_cb => $result_cb);
 	}
@@ -312,6 +316,7 @@ sub stage_2 {
 	    # or if we loaded the 'current' slot and it was invalid (this happens if
 	    # the user changes 'use-slots', for example
 	    $ignore_error = 1 if ($loaded_current && $err->invalid);
+	    $ignore_error = 1 if (defined($err->{'slot'}) && $err->invalid);
 	    $ignore_error = 1 if ($err->empty);
 
 	    if ($ignore_error) {
@@ -390,14 +395,44 @@ sub stage_2 {
 
 	if (!defined $autolabel->{'template'} ||
 	    $autolabel->{'template'} eq "") {
-	    $self->_user_msg(slot_result  => 1,
-			     not_autolabel => 1,
-			     slot         => $slot,
-			     res          => $res);
+	    if ($status & $DEVICE_STATUS_VOLUME_UNLABELED and
+		$dev->volume_header and
+		$dev->volume_header->{'type'} == $Amanda::Header::F_EMPTY) {
+		$self->_user_msg(slot_result   => 1,
+			         not_autolabel => 1,
+				 empty         => 1,
+			         slot          => $slot,
+			         res           => $res);
+	    } elsif ($status & $DEVICE_STATUS_VOLUME_UNLABELED and
+		$dev->volume_header and
+		$dev->volume_header->{'type'} == $Amanda::Header::F_WEIRD) {
+		$self->_user_msg(slot_result   => 1,
+			         not_autolabel => 1,
+				 non_amanda    => 1,
+			         slot          => $slot,
+			         res           => $res);
+	    } elsif ($status & $DEVICE_STATUS_VOLUME_ERROR) {
+		$self->_user_msg(slot_result   => 1,
+			         not_autolabel => 1,
+				 volume_error  => 1,
+				 err           => $dev->error_or_status(),
+			         slot          => $slot,
+			         res           => $res);
+	    } elsif ($status != $DEVICE_STATUS_SUCCESS) {
+		$self->_user_msg(slot_result   => 1,
+			         not_autolabel => 1,
+				 not_success   => 1,
+				 err           => $dev->error_or_status(),
+			         slot          => $slot,
+			         res           => $res);
+	    } else {
+		$self->_user_msg(slot_result   => 1,
+			         not_autolabel => 1,
+			         slot          => $slot,
+			         res           => $res);
+	    }
 	    return $steps->{'try_continue'}->();
 	}
-
-	$self->_user_msg(slot_result => 1, slot => $slot, res => $res);
 
 	if ($status & $DEVICE_STATUS_VOLUME_UNLABELED and
 	    $dev->volume_header and
@@ -437,6 +472,7 @@ sub stage_2 {
 	    return $steps->{'try_continue'}->();
 	}
 
+	$self->_user_msg(slot_result => 1, slot => $slot, res => $res);
 	$res->get_meta_label(finished_cb => $steps->{'got_meta_label'});
 	return;
     };

@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -19,6 +20,7 @@
  */
 
 #include "amanda.h"
+#include "event.h"
 #include "getopt.h"
 #include "amar.h"
 
@@ -37,6 +39,7 @@ usage(void)
 {
     printf("Usage: amarchiver [--version|--create|--list|--extract] [--verbose]* [--file file]\n");
     printf("            [filename]*\n");
+    exit(1);
 }
 
 static void
@@ -159,6 +162,35 @@ extract_file_finish_cb(
     return TRUE;
 }
 
+static int
+mkpath(
+    const char *s,
+    mode_t mode)
+{
+    char *path = NULL;
+    char *r = NULL;
+    int rv = -1;
+
+    if (strcmp(s, ".") == 0 || strcmp(s, "/") == 0)
+	return 0;
+
+    path = g_strdup(s);
+    r = dirname(path);
+
+    if ((mkpath(r, mode) == -1) && (errno != EEXIST))
+	goto out;
+
+    if ((mkdir(s, mode) == -1) && (errno != EEXIST))
+	rv = -1;
+    else
+	rv = 0;
+
+out:
+    g_free(path);
+
+    return rv;
+}
+
 static gboolean
 extract_frag_cb(
 	gpointer user_data G_GNUC_UNUSED,
@@ -176,7 +208,16 @@ extract_frag_cb(
     int fd = GPOINTER_TO_INT(*attr_data);
 
     if (!fd) {
-	char *filename = g_strdup_printf("%s.%d", (char *)file_data, attrid);
+	char *filename;
+	char *dir;
+	if (attrid == AMAR_ATTR_GENERIC_DATA) {
+	    filename = g_strdup((char *)file_data);
+	} else {
+	    filename = g_strdup_printf("%s.%d", (char *)file_data, attrid);
+	}
+	dir = g_strdup(filename);
+	mkpath(dirname(dir), 0770);
+	g_free(dir);
 	fd = open(filename, O_WRONLY|O_CREAT|O_TRUNC, 0660);
 	if (fd < 0) {
 	    g_fprintf(stderr, _("Could not open '%s' for writing: %s"),
@@ -237,14 +278,22 @@ do_extract(
     if (!archive)
 	error_exit("amar_new", error);
 
-    if (!amar_read(archive, &ud, handling, extract_file_start_cb,
-		   extract_file_finish_cb, &error)) {
-	if (error)
-	    error_exit("amar_read", error);
-	else
-	    /* one of the callbacks already printed an error message */
-	    exit(1);
+//    if (!amar_read(archive, &ud, handling, extract_file_start_cb,
+//		   extract_file_finish_cb, NULL, &error)) {
+//	if (error)
+//	    error_exit("amar_read", error);
+//	else
+//	    /* one of the callbacks already printed an error message */
+//	    exit(1);
+//    }
+
+    set_amar_read_cb(archive, &ud, handling, extract_file_start_cb,
+		     extract_file_finish_cb, NULL, &error);
+    event_loop(0);
+    if (error) {
+	error_exit("amar_read", error);
     }
+    amar_close(archive, NULL);
 }
 
 static gboolean
@@ -261,6 +310,7 @@ list_file_start_cb(
 
     return TRUE;
 }
+
 static void
 do_list(
 	char *opt_file,
@@ -287,7 +337,7 @@ do_list(
 	error_exit("amar_new", error);
 
     if (!amar_read(archive, NULL, handling, list_file_start_cb,
-		   NULL, &error)) {
+		   NULL, NULL, &error)) {
 	if (error)
 	    error_exit("amar_read", error);
 	else
@@ -339,12 +389,6 @@ int main(
     if (opt_create + opt_extract + opt_list > 1) {
 	g_fprintf(stderr,"Only one of --create, --list or --extract must be provided\n");
 	usage();
-    }
-    if (opt_list > 1) {
-	if (argc) {
-	    g_fprintf(stderr, "--list does not take any additional filenames\n");
-	    usage();
-	}
     }
 
     if (opt_create > 0)

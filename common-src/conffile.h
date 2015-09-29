@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-2000 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -80,6 +81,15 @@
  * to Glib's GValue.  It's worth considering rewriting this with GValue, but for the moment,
  * this works and it's here.
  */
+
+/* A "seen" struct.  Rather than allocate strings all over the place, this
+ * string is in the "parsed_filenames" GSList and will be freed when that
+ * GSList is freed.  This struct should be opaque to other modules. */
+typedef struct seen_s {
+    char *block;
+    char *filename;
+    int linenum;
+} seen_t;
 
 /* holdingdisk types */
 typedef enum {
@@ -195,8 +205,8 @@ typedef enum {
 } data_path_t;
 
 typedef struct exinclude_s {
-    sl_t *sl_list;
-    sl_t *sl_file;
+    am_sl_t *sl_list;
+    am_sl_t *sl_file;
     int  optional;
 } exinclude_t;
 
@@ -204,6 +214,7 @@ typedef struct {
     int append;
     int priority;
     GSList* values;
+    seen_t seen;
 } property_t;
 
 typedef GHashTable* proplist_t;
@@ -256,15 +267,13 @@ typedef enum {
     CONFTYPE_PART_CACHE_TYPE,
     CONFTYPE_HOST_LIMIT,
     CONFTYPE_NO_YES_ALL,
+    CONFTYPE_STR_LIST,
 } conftype_t;
 
-/* A "seen" struct.  Rather than allocate strings all over the place, this
- * string is in the "parsed_filenames" GSList and will be freed when that
- * GSList is freed.  This struct should be opaque to other modules. */
-typedef struct seen_s {
-    char *filename;
-    int linenum;
-} seen_t;
+typedef enum {
+    CONF_UNIT_NONE,
+    CONF_UNIT_K,
+} confunit_t;
 
 /* This should be considered an opaque type for any other modules.  The complete
  * struct is included here to allow quick access via macros. Access it *only* through
@@ -275,7 +284,7 @@ typedef struct val_s {
         gint64		int64;
         double		r;
         char		*s;
-        ssize_t		size;
+        size_t		size;
         time_t		t;
         float		rate[2];
         exinclude_t	exinclude;
@@ -288,6 +297,7 @@ typedef struct val_s {
     } v;
     seen_t seen;
     conftype_t type;
+    confunit_t unit;
 } val_t;
 
 /* Functions to typecheck and extract a particular type of
@@ -299,6 +309,7 @@ float                 val_t_to_real     (val_t *);
 char                 *val_t_to_str      (val_t *); /* (also converts CONFTYPE_IDENT) */
 char                 *val_t_to_ident    (val_t *); /* (also converts CONFTYPE_STR) */
 identlist_t           val_t_to_identlist(val_t *);
+identlist_t           val_t_to_str_list (val_t *);
 time_t                val_t_to_time     (val_t *);
 ssize_t               val_t_to_size     (val_t *);
 int                   val_t_to_boolean  (val_t *);
@@ -488,6 +499,10 @@ typedef enum {
     CNF_TAPERSCAN,
     CNF_MAX_DLE_BY_VOLUME,
     CNF_EJECT_VOLUME,
+    CNF_TMPDIR,
+    CNF_REPORT_USE_MEDIA,
+    CNF_REPORT_NEXT_MEDIA,
+    CNF_REPORT_FORMAT,
     CNF_CNF /* sentinel */
 } confparm_key;
 
@@ -715,6 +730,7 @@ typedef enum {
     DUMPTYPE_ALLOW_SPLIT,
     DUMPTYPE_RECOVERY_LIMIT,
     DUMPTYPE_DUMP_LIMIT,
+    DUMPTYPE_MAX_WARNINGS,
     DUMPTYPE_DUMPTYPE /* sentinel */
 } dumptype_key;
 
@@ -806,6 +822,7 @@ char *dumptype_name(dumptype_t *dtyp);
 #define dumptype_get_allow_split(dtyp)         (val_t_to_boolean(dumptype_getconf((dtyp), DUMPTYPE_ALLOW_SPLIT)))
 #define dumptype_get_recovery_limit(dtyp)      (val_t_to_host_limit(dumptype_getconf((dtyp), DUMPTYPE_RECOVERY_LIMIT)))
 #define dumptype_get_dump_limit(dtyp)          (val_t_to_host_limit(dumptype_getconf((dtyp), DUMPTYPE_DUMP_LIMIT)))
+#define dumptype_get_max_warnings(dtyp)        (val_t_to_int(dumptype_getconf((dtyp), DUMPTYPE_MAX_WARNINGS)))
 
 /*
  * Interface parameter access
@@ -1387,6 +1404,10 @@ void set_config_overrides(config_overrides_t *co);
  * Initialization
  */
 
+/* If the config is initialized */
+gboolean
+config_is_initialized(void);
+
 /* Constants for config_init */
 typedef enum {
     /* Use arg_config_name, if not NULL */
@@ -1481,7 +1502,10 @@ char *generic_get_security_conf(char *, void *);
  * This function only dumps the server configuration, and will fail on
  * clients.
  */
-void dump_configuration(void);
+void dump_configuration(gboolean print_default, gboolean print_source);
+
+void dump_dumptype(dumptype_t *dp, char *prefix, gboolean print_default,
+		   gboolean print_source);
 
 /* Return a sequence of strings giving the printable representation
  * of the given val_t.  If str_needs_quotes is true and each string is
@@ -1500,7 +1524,8 @@ void dump_configuration(void);
  * @param str_needs_quotes: add quotes to CONFTYPE_STR values?
  * @returns: NULL-terminated string vector
  */
-char **val_t_display_strs(val_t *val, int str_needs_quotes);
+char **val_t_display_strs(val_t *val, int str_needs_quotes, gboolean  print_source,
+			  gboolean print_unit);
 
 /* Read a dumptype; this is used by this module as well as by diskfile.c to
  * read the disklist.  The two are carefully balanced in their parsing process.

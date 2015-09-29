@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -192,6 +193,8 @@ typedef enum {
     fe_amrecover_receive_unfiltered,
     fe_application_client_name,
     fe_script_client_name,
+    fe_dumptype_property,
+    fe_sendbackup_state,
 
     /*
      * All new features must be inserted immediately *before* this entry.
@@ -211,6 +214,7 @@ typedef struct am_feature_s {
  * Functions.
  */
 
+extern am_feature_t *am_features(am_feature_t *f);
 extern am_feature_t *am_init_feature_set(void);
 extern am_feature_t *am_set_default_feature_set(void);
 extern am_feature_t *am_allocate_feature_set(void);

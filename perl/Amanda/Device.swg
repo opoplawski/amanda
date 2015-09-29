@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -217,7 +218,7 @@ set_gvalue_from_sv(SV *sv, GValue *value)
  * DirectTCPConnection object
  */
 
-typedef struct DirectTCPConnection {
+typedef struct {
     %extend {
 	~DirectTCPConnection() {
 	    g_object_unref(self);
@@ -236,7 +237,7 @@ typedef struct DirectTCPConnection {
 
 %name(unaliased_name) extern char *device_unaliased_name(char *);
 
-typedef struct Device {
+typedef struct {
 
     /* methods */
     %extend {
@@ -282,6 +283,16 @@ typedef struct Device {
 	gboolean
 	finish() {
 	    return device_finish(self);
+	}
+
+	guint64
+	get_bytes_read() {
+	    return device_get_bytes_read(self);
+	}
+
+	guint64
+	get_bytes_written() {
+	    return device_get_bytes_written(self);
 	}
 
 	gboolean
@@ -336,58 +347,14 @@ typedef struct Device {
 		*addrs = NULL;
 	}
 
-	%newobject accept; /* connection is already ref'd, so we own it */
-	DirectTCPConnection *
-	accept() {
-	    DirectTCPConnection *conn = NULL;
-	    gboolean rv;
-
-	    rv = device_accept(self, &conn, NULL, NULL);
-	    if (!rv && conn) {
-		/* conn is ref'd for our convenience, but we don't want it */
-		g_object_unref(conn);
-		conn = NULL;
-	    }
-	    return conn;
-	}
-
-	%newobject connect; /* connection is already ref'd, so we own it */
-	DirectTCPConnection *
-	connect(gboolean for_writing, DirectTCPAddr *addrs) {
-	    DirectTCPConnection *conn = NULL;
-	    gboolean rv;
-
-	    rv = device_connect(self, for_writing, addrs, &conn, NULL, NULL);
-	    if (!rv && conn) {
-		/* conn is ref'd for our convenience, but we don't want it */
-		g_object_unref(conn);
-		conn = NULL;
-	    }
-	    return conn;
-	}
-
 	gboolean
 	use_connection(DirectTCPConnection *conn) {
 	    return device_use_connection(self, conn);
 	}
 
-	%typemap(in,numinputs=0) guint64 *actual_size (guint64 sz) {
-	    sz = 0;
-	    $1 = &sz;
-	}
-	%typemap(argout) guint64 *actual_size {
-	    SP += argvi; PUTBACK;
-	    $result = sv_2mortal(amglue_newSVu64(*$1));
-	    SPAGAIN; SP -= argvi; argvi++;
-	}
 	gboolean
-	write_from_connection(guint64 size, guint64 *actual_size) {
-	    return device_write_from_connection(self, size, actual_size);
-	}
-
-	gboolean
-	read_to_connection(guint64 size, guint64 *actual_size) {
-	    return device_read_to_connection(self, size, actual_size);
+	allow_take_scribe_from() {
+	    return device_allow_take_scribe_from(self);
 	}
 
 	%typemap(out) const GSList * {

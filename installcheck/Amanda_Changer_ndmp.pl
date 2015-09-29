@@ -1,8 +1,9 @@
-# Copyright (c) 2009, 2010 Zmanda Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -465,13 +466,13 @@ sub test_changer {
 	      barcode => 'PTAG00XX', reserved => 1, loaded_in => 0,
 	      current => 1,
 	      device_status => $DEVICE_STATUS_VOLUME_UNLABELED,
-	      device_error => undef,
-	      f_type => undef, label => undef },
+	      device_error => 'no tape label found',
+	      f_type => $Amanda::Header::F_EMPTY, label => undef },
 	    { slot => 4, state => Amanda::Changer::SLOT_FULL,
 	      barcode => 'PTAG01XX', reserved => 1, loaded_in => 1,
 	      device_status => $DEVICE_STATUS_VOLUME_UNLABELED,
-	      device_error => undef,
-	      f_type => undef, label => undef },
+	      device_error => 'no tape label found',
+	      f_type => $Amanda::Header::F_EMPTY, label => undef },
 	    { slot => 5, state => Amanda::Changer::SLOT_FULL,
 	      barcode => 'PTAG02XX',
 	      device_status => undef, device_error => undef,

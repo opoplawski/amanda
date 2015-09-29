@@ -1,8 +1,9 @@
-# Copyright (c) 2007,2008,2009,2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -186,6 +187,7 @@ has one of the following values:
   driveinuse        All drives are in use
   unknown           Unknown reason
   empty             The slot is empty
+  device            Failed to set up the device
 
 Like types, checks for particular reasons should use the methods, to avoid
 undetected typos:
@@ -382,34 +384,6 @@ change, but some entries can be added or removed.
 
 Each slot is represented by a hash with the following keys:
 
-=head3 make_new_tape_label
-
-  $chg->make_new_tape_label(barcode => $barcode,
-			    slot    => $slot,
-			    meta    => $meta);
-
-To devise a new name for a volume using the C<barcode> and C<meta> arguments.
-This will return C<undef> if no label could be created.
-
-=head3 make_new_meta_label
-
-  $chg->make_new_meta_label();
-
-To devise a new meta name for a meta volume.
-This will return C<undef> if no label could be created.
-
-=head3 have_inventory
-
-  $chg->have_inventory() 
-
-Return True if the changer have the inventory method.
-
-=head3 volume_is_labelable
-
-  $chg->volume_is_labelable($device_status, $f_type, $label);
-
-Return 1 if the volume is labelable acording to the autolabel setting.
-
 =over 4
 
 =item slot
@@ -465,6 +439,34 @@ easily add or remove volumes.  This information may be useful for operations to
 bulk-import newly-inserted tapes or bulk-export a set of tapes.
 
 =back
+
+=head3 make_new_tape_label
+
+  $chg->make_new_tape_label(barcode => $barcode,
+			    slot    => $slot,
+			    meta    => $meta);
+
+To devise a new name for a volume using the C<barcode> and C<meta> arguments.
+This will return C<undef> if no label could be created.
+
+=head3 make_new_meta_label
+
+  $chg->make_new_meta_label();
+
+To devise a new meta name for a meta volume.
+This will return C<undef> if no label could be created.
+
+=head3 have_inventory
+
+  $chg->have_inventory() 
+
+Return True if the changer have the inventory method.
+
+=head3 volume_is_labelable
+
+  $chg->volume_is_labelable($device_status, $f_type, $label);
+
+Return 1 if the volume is labelable acording to the autolabel setting.
 
 =head3 move
 
@@ -932,7 +934,7 @@ sub _new_from_uri { # (note: this sub is patched by the installcheck)
     }
 
     my $rv = eval {$pkgname->new(Amanda::Changer::Config->new($cc), $uri);};
-    die "$pkgname->new return undef" if $@;
+    die "$pkgname->new failed: $@" if $@;
     die "$pkgname->new did not return an Amanda::Changer object or an Amanda::Changer::Error"
 	unless ($rv->isa("Amanda::Changer") or $rv->isa("Amanda::Changer::Error"));
 
@@ -981,6 +983,7 @@ sub inventory { _stubop("inventory", "inventory_cb", @_); }
 sub move { _stubop("move", "finished_cb", @_); }
 sub set_meta_label { _stubop("set_meta_label", "finished_cb", @_); }
 sub get_meta_label { _stubop("get_meta_label", "finished_cb", @_); }
+sub verify { _stubop("verify", "finished_cb", @_); }
 
 sub have_inventory {
     my $self = shift;
@@ -1045,7 +1048,7 @@ sub info {
 	my @annotated_errs =
 	    map { [ sprintf("While getting info key '%s'", $_), $key_results{$_}->[0] ] }
 	    grep { defined($key_results{$_}->[0]) }
-	    keys %key_results;
+	    sort keys %key_results;
 
 	if (@annotated_errs) {
 	    return $self->make_combined_error(
@@ -1176,6 +1179,13 @@ sub with_locked_state {
     my ($statefile, $cb, $sub) = @_;
     my ($filelock, $STATE);
     my $poll = 0; # first delay will be 0.1s; see below
+    my $time;
+
+    if (defined $self->{'lock-timeout'}) {
+	$time = time() + $self->{'lock-timeout'};
+    } else {
+	$time = time() + 1000;
+    }
 
     my $steps = define_steps
 	cb_ref => \$cb;
@@ -1188,13 +1198,17 @@ sub with_locked_state {
 
     step lock => sub {
 	my $rv = $filelock->lock();
-	if ($rv == 1) {
+	my $error = $!;
+	if ($rv == 1 && time() < $time) {
 	    # loop until we get the lock, increasing $poll to 10s
 	    $poll += 100 unless $poll >= 10000;
 	    return Amanda::MainLoop::call_after($poll, $steps->{'lock'});
+	} elsif ($rv == 1) {
+	    return $self->make_error("fatal", $cb,
+		    message => "Timeout trying to lock '$statefile': $error");
 	} elsif ($rv == -1) {
 	    return $self->make_error("fatal", $cb,
-		    message => "Error locking '$statefile'");
+		    message => "Error locking '$statefile': $error");
 	}
 
 	$steps->{'read'}->();
@@ -1207,10 +1221,12 @@ sub with_locked_state {
 	    if ($@) {
 		# $fh goes out of scope here, and is thus automatically
 		# unlocked
-		return $cb->("error reading '$statefile': $@", undef);
+		debug("error reading '$statefile': $@");
+		$STATE = {};
 	    }
 	    if (!defined $STATE or ref($STATE) ne 'HASH') {
-		return $cb->("'$statefile' did not define \$STATE properly", undef);
+		debug("'$statefile' did not define \$STATE properly");
+		$STATE = {};
 	    }
 	} else {
 	    # initial state (blank file)
@@ -1253,15 +1269,19 @@ sub make_new_tape_label {
 
     my $tl = $self->{'tapelist'};
     die ("make_new_tape_label: no tapelist") if !$tl;
-    return undef if !defined $self->{'autolabel'}->{'template'};
-    return undef if !defined $self->{'labelstr'};
+    if (!defined $self->{'autolabel'}) {
+	return (undef, "autolabel not set");
+    }
+    if (!defined $self->{'autolabel'}->{'template'}) {
+	return (undef, "template is not set, you must set autolabel");
+    }
+    if (!defined $self->{'labelstr'}) {
+	return (undef, "labelstr not set");
+    }
     my $template = $self->{'autolabel'}->{'template'};
     my $labelstr = $self->{'labelstr'};
     my $slot_digit = 1;
 
-    if (!$template) {
-	return (undef, "template is not set, you must set autolabel");
-    }
     $template =~ s/\$\$/SUBSTITUTE_DOLLAR/g;
     $template =~ s/\$b/SUBSTITUTE_BARCODE/g;
     $template =~ s/\$m/SUBSTITUTE_META/g;
@@ -1391,7 +1411,7 @@ sub make_new_meta_label {
     (my $sprintf_pat = $template) =~ s/(%+)/"%0" . length($1) . "d"/e;
 
     my %existing_meta_labels =
-	map { $_->{'meta'} => 1 } @{$tl->{'tles'}};
+	map { $_->{'meta'} => 1 } grep { defined $_->{'meta'} } @{$tl->{'tles'}};
 
     my ($i, $meta);
     for ($i = 1; $i < $nlabels; $i++) {
@@ -1505,6 +1525,7 @@ sub driveinuse { $_[0]->failed && $_[0]->{'reason'} eq 'driveinuse'; }
 sub volinuse { $_[0]->failed && $_[0]->{'reason'} eq 'volinuse'; }
 sub unknown { $_[0]->failed && $_[0]->{'reason'} eq 'unknown'; }
 sub empty { $_[0]->failed && $_[0]->{'reason'} eq 'empty'; }
+sub device { $_[0]->failed && $_[0]->{'reason'} eq 'device'; }
 
 # slot accessor
 sub slot { $_[0]->{'slot'}; }
@@ -1617,7 +1638,7 @@ sub make_new_meta_label {
 
 package Amanda::Changer::Config;
 use Amanda::Config qw( :getconf string_to_boolean );
-use Amanda::Device;
+use Amanda::Device qw( :constants );
 
 sub new {
     my $class = shift;
@@ -1678,7 +1699,12 @@ sub configure_device {
     while (my ($propname, $propinfo) = each(%properties)) {
 	for my $value (@{$propinfo->{'values'}}) {
 	    if (!$device->property_set($propname, $value)) {
-		my $msg = "Error setting '$propname' on device '".$device->device_name."'";
+		my $msg;
+		    if ($device->status == $DEVICE_STATUS_SUCCESS) {
+			$msg = "Error setting '$propname' on device '".$device->device_name."'";
+		    } else {
+			$msg = $device->error() . " on device '".$device->device_name."'";
+		    }
 		if (exists $propinfo->{'optional'}) {
 		    if ($propinfo->{'optional'} eq 'warn') {
 			warn("$msg (ignored)");
@@ -1729,7 +1755,7 @@ sub _get_implicit_properties {
     # that the property is implicit and that a failure to set it is not fatal.
     # The flag is used by configure_device.
     if (tapetype_seen($tapetype, $TAPETYPE_LENGTH)) {
-	$props->{'max_volume_usage'} = {
+	$props->{Amanda::Config::amandaify_property_name('max-volume-usage')} = {
 	    optional => 1,
 	    priority => 0,
 	    append => 0,
@@ -1739,7 +1765,7 @@ sub _get_implicit_properties {
     }
 
     if (tapetype_seen($tapetype, $TAPETYPE_READBLOCKSIZE)) {
-	$props->{'read_block_size'} = {
+	$props->{Amanda::Config::amandaify_property_name('read-block-size')} = {
 	    optional => "warn", # optional, but give a warning
 	    priority => 0,
 	    append => 0,
@@ -1749,7 +1775,7 @@ sub _get_implicit_properties {
     }
 
     if (tapetype_seen($tapetype, $TAPETYPE_BLOCKSIZE)) {
-	$props->{'block_size'} = {
+	$props->{Amanda::Config::amandaify_property_name('block-size')} = {
 	    optional => 0,
 	    priority => 0,
 	    append => 0,

@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2009, 2010 Zmanda Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -26,13 +27,15 @@ package main;
 use Amanda::Util qw( :constants );
 use Amanda::Config qw( :init :getconf );
 use Amanda::Logfile qw( :logtype_t log_add $amanda_log_trace_log );
-use Amanda::Debug;
+use Amanda::Debug qw( debug );
 use Amanda::Taper::Controller;
 use Getopt::Long;
 
 Amanda::Util::setup_application("taper", "server", $CONTEXT_DAEMON);
 
 my $config_overrides = new_config_overrides($#ARGV+1);
+
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw{bundling});
 GetOptions(
     'version' => \&Amanda::Util::version_opt,

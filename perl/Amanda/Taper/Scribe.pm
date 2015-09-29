@@ -1,8 +1,9 @@
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This library is free software; you can redistribute it and/or modify it
-# under the terms of the GNU Lesser General Public License version 2.1 as
-# published by the Free Software Foundation.
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+#* License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
 #
 # This library is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -498,13 +499,43 @@ sub start {
 	    unless exists $params{$rq_param};
     }
 
-    die "scribe already started" if $self->{'started'};
+    confess "scribe already started" if $self->{'started'};
 
     $self->dbg("starting");
     $self->{'write_timestamp'} = $params{'write_timestamp'};
+    $self->{'taperscan'}->set_write_timestamp($self->{'write_timestamp'});
 
     # start up the DevHandling object, making sure we know
     # when it's done with its startup process
+    $self->{'devhandling'}->start(finished_cb => sub {
+	$self->{'started'} = 1;
+	$params{'finished_cb'}->(@_);
+    });
+}
+
+sub wait_device {
+    my $self = shift;
+    my %params = @_;
+
+    for my $rq_param (qw(finished_cb)) {
+	croak "required parameter '$rq_param' missing"
+	    unless exists $params{$rq_param};
+    }
+
+    $self->{'cancelled'} = 0;
+
+    if ($self->get_device()) {
+	return $params{'finished_cb'}->(undef);
+    }
+
+    if ($self->{'devhandling'}->{'scan_running'}) {
+	$self->{'devhandling'}->{'start_finished_cb'} = $params{'finished_cb'};
+	return;
+    }
+
+    # start up the DevHandling object, making sure we know
+    # when it's done with its startup process
+    $self->{'started'} = 0;
     $self->{'devhandling'}->start(finished_cb => sub {
 	$self->{'started'} = 1;
 	$params{'finished_cb'}->(@_);
@@ -527,7 +558,7 @@ sub quit {
 	$self->dbg("quitting");
 
 	if ($self->{'xfer'}) {
-	    die "Scribe cannot quit while a transfer is active";
+	    confess "Scribe cannot quit while a transfer is active";
 	    # Supporting this would be complicated:
 	    # - cancel the xfer and wait for it to complete
 	    # - ensure that the taperscan not be started afterward
@@ -590,7 +621,7 @@ sub check_data_path {
     my $device = $self->get_device();
 
     if (!defined $device) {
-	die "no device is available to check the datapath";
+	return "no device is available to check the datapath";
     }
 
     my $use_directtcp = $device->directtcp_supported();
@@ -622,18 +653,19 @@ sub get_xfer_dest {
 	    unless exists $params{$rq_param};
     }
 
-    die "not yet started"
+    confess "not yet started"
 	unless $self->{'write_timestamp'} and $self->{'started'};
-    die "xfer element already returned"
+    confess "xfer element already returned"
 	if ($self->{'xdt'});
-    die "xfer already running"
+    confess "xfer already running"
 	if ($self->{'xfer'});
 
     $self->{'xfer'} = undef;
     $self->{'xdt'} = undef;
+    $self->{'oldsize'} = 0;
     $self->{'size'} = 0;
     $self->{'duration'} = 0.0;
-    $self->{'nparts'} = undef;
+    $self->{'nparts'} = 0;
     $self->{'dump_start_time'} = undef;
     $self->{'last_part_successful'} = 1;
     $self->{'started_writing'} = 0;
@@ -656,7 +688,7 @@ sub get_xfer_dest {
 
     my $xdt_first_dev = $self->get_device();
     if (!defined $xdt_first_dev) {
-	die "no device is available to create an xfer_dest";
+	confess "no device is available to create an xfer_dest";
     }
     my $leom_supported = $xdt_first_dev->property_get("leom");
     my $use_directtcp = $xdt_first_dev->directtcp_supported();
@@ -747,7 +779,7 @@ sub start_dump {
     my $self = shift;
     my %params = @_;
 
-    die "no xfer dest set up; call get_xfer_dest first"
+    confess "no xfer dest set up; call get_xfer_dest first"
         unless defined $self->{'xdt'};
 
     # get the header ready for writing (totalparts was set by the caller)
@@ -767,29 +799,19 @@ sub cancel_dump {
     my $self = shift;
     my %params = @_;
 
-    die "no xfer dest set up; call get_xfer_dest first"
+    confess "no xfer dest set up; call get_xfer_dest first"
 	unless defined $self->{'xdt'};
 
+    $self->{'devhandling'}->{'volume_cb'} = undef;
     # set up the dump_cb for when this dump is done, and keep the xfer
     $self->{'dump_cb'} = $params{'dump_cb'};
     $self->{'xfer'} = $params{'xfer'};
 
-    # XXX The cancel should call dump_cb, but right now the xfer stays hung in
-    # accept.  So we leave the xfer to its hang, and dump_cb is called and xdt
-    # and xfer are set to undef.  This should be fixed in 3.2.
+    # The cancel will can dump_cb.
 
     $self->{'xfer'}->cancel();
+    $self->{'cancelled'} = 1;
 
-    $self->{'dump_cb'}->(
-	result => "FAILED",
-	device_errors => [],
-	config_denial_message => undef,
-	size => 0,
-	duration => 0.0,
-	total_duration => 0,
-	nparts => 0);
-    $self->{'xdt'} = undef;
-    $self->{'xfer'} = undef;
 }
 
 sub close_volume {
@@ -802,10 +824,11 @@ sub get_bytes_written {
     my ($self) = @_;
 
     if (defined $self->{'xdt'}) {
-	return $self->{'size'} + $self->{'xdt'}->get_part_bytes_written();
-    } else {
-	return $self->{'size'};
+	$self->{'oldsize'} =  $self->{'size'} + $self->{'xdt'}->get_part_bytes_written();
+    } elsif (defined $self->{'xfer'}) {
+	$self->{'oldsize'} =  $self->{'size'};
     }
+    return $self->{'oldsize'};
 }
 
 sub _start_part {
@@ -847,6 +870,9 @@ sub _start_part {
     # and start writing this part
     $self->{'started_writing'} = 1;
     $self->dbg("resuming transfer");
+    if (!defined ($self->{'nparts'}) or $self->{'nparts'} == 0) {
+	$self->{'feedback'}->scribe_ready();
+    }
     $self->{'xdt'}->start_part(!$self->{'last_part_successful'},
 			       $self->{'dump_header'});
 }
@@ -882,11 +908,11 @@ sub _xmsg_part_done {
     # are an implementation detail of the splitting done by the transfer
     # destination.
 
-    if ($msg->{'successful'} and $msg->{'size'} == 0) {
+    if ($msg->{'successful'} and $msg->{'size'} == 0 and $msg->{'partnum'} == 0) {
 	$self->dbg("not notifying for empty, successful part");
     } else {
 	# double-check partnum
-	die "Part numbers do not match!"
+	confess "Part numbers do not match! $self->{'dump_header'}->{'partnum'} $msg->{'partnum'}"
 	    unless ($self->{'dump_header'}->{'partnum'} == $msg->{'partnum'});
 
 	# notify
@@ -997,6 +1023,14 @@ sub _xmsg_done {
     }
 }
 
+sub abort_setup {
+    my $self = shift;
+    my %params = @_;
+
+    $self->{'dump_cb'} = $params{'dump_cb'};
+    $self->_dump_done();
+}
+
 sub _dump_done {
     my $self = shift;
 
@@ -1004,14 +1038,19 @@ sub _dump_done {
 
     # determine the correct final status - DONE if we're done, PARTIAL
     # if we've started writing to the volume, otherwise FAILED
-    if (@{$self->{'device_errors'}} or $self->{'config_denial_message'} or
-	!$self->{'last_part_successful'}) {
-	$result = $self->{'started_writing'}? 'PARTIAL' : 'FAILED';
+    if (!$self->{'started_writing'}) {
+	$result = 'FAILED';
+    } elsif (@{$self->{'device_errors'}} or $self->{'config_denial_message'} or
+	     !$self->{'last_part_successful'}) {
+	$result = 'PARTIAL';
     } else {
 	$result = 'DONE';
     }
 
     my $dump_cb = $self->{'dump_cb'};
+
+    return if !defined $dump_cb;
+
     my %dump_cb_args = (
 	result => $result,
 	device_errors => $self->{'device_errors'},
@@ -1052,7 +1091,7 @@ sub _operation_failed {
     # tuck the message away as desired
     push @{$self->{'device_errors'}}, $params{'device_error'}
 	if defined $params{'device_error'};
-    $self->{'config_denial_message'} = $params{'config_denial_message'} 
+    $self->{'config_denial_message'} = $params{'config_denial_message'}
 	if $params{'config_denial_message'};
 
     # cancelling the xdt will eventually cause an XMSG_DONE, which will notice
@@ -1066,8 +1105,6 @@ sub _operation_failed {
         if (defined $self->{'dump_cb'}) {
             # _dump_done constructs the dump_cb from $self parameters
             $self->_dump_done();
-        } else {
-            die "error with no callback to handle it: $error_message";
         }
     }
 }
@@ -1147,6 +1184,7 @@ sub _get_new_volume {
 	return;
     }
 
+    return if $self->{'cancelled'};
     $self->{'devhandling'}->get_volume(volume_cb => sub { $self->_volume_cb(@_); });
 }
 
@@ -1261,7 +1299,13 @@ sub _volume_cb  {
     step device_started => sub {
 	my $result = shift;
 
-	if ($result == 0) {
+	if ($result =~ /\D/) {
+	    $self->{'feedback'}->scribe_notif_new_tape(
+		error => $result,
+		volume_label => undef);
+	    $self->_get_new_volume();
+	    return $cbX->();
+	} elsif ($result == 0) {
 	    # try reading the label to see whether we erased the tape
 	    my $erased = 0;
 	    CHECK_READ_LABEL: {
@@ -1303,12 +1347,6 @@ sub _volume_cb  {
 		error => "while labeling new volume: " . $device->error_or_status(),
 		volume_label => $erased? $new_label : undef);
 
-	    $self->_get_new_volume();
-	    return $cbX->();
-	} elsif ($result != 1) {
-	    $self->{'feedback'}->scribe_notif_new_tape(
-		error => $result,
-		volume_label => undef);
 	    $self->_get_new_volume();
 	    return $cbX->();
 	}
@@ -1386,10 +1424,15 @@ sub _device_start {
 			       $reservation->{'barcode'});
 	    $tl->write();
 	    $self->dbg("generate new label '$new_label'");
-	} elsif (!defined $meta) {
+	} else {
 	    $tl->reload(0);
 	    my $tle = $tl->lookup_tapelabel($new_label);
-	    my $meta = $tle->{'meta'};
+	    $meta = $tle->{'meta'} if !defined $meta && $tle->{'meta'};
+	    my $barcode = $tle->{'barcode'};
+	    if (defined $barcode and defined $reservation->{'barcode'} and
+		$barcode ne $reservation->{'barcode'}) {
+		return $finished_cb->("tapelist for label '$new_label' have barcode '$barcode' but changer report '" . $reservation->{'barcode'} . "'");
+	    }
 	}
 
 	# write the label to the device
@@ -1410,7 +1453,7 @@ sub _device_start {
 	$tl->remove_tapelabel($new_label);
 	$tl->add_tapelabel($self->{'write_timestamp'}, $new_label,
 			   $tle? $tle->{'comment'} : undef, 1, $meta,
-			   $reservation->{'barcode'}, $device->header_block_size/1024);
+			   $reservation->{'barcode'}, $device->block_size/1024);
 	$tl->write();
 
 	$reservation->set_meta_label(meta => $meta,
@@ -1474,11 +1517,26 @@ sub get_splitting_args_from_config {
 	    unless defined $params{'part_cache_type'};
     }
 
-    # if any of the dle_* parameters are set, use those to set the part_*
-    # parameters, which are emptied out first.
-    if (defined $params{'dle_tape_splitsize'} or
-	defined $params{'dle_split_diskbuffer'} or
-	defined $params{'dle_fallback_splitsize'}) {
+    if (defined $splitting_args{'data_path'} and
+	$splitting_args{'data_path'} eq "DIRECTTCP") {
+	my $ps = $params{'dle_tape_splitsize'};
+	if (defined $ps and $ps > 0) {
+	    $params{'part_cache_max_size'} = undef
+	} else {
+	    $ps = $params{'part_size'};
+	    my $pcms = $params{'part_cache_max_size'};
+	    $ps = $pcms if (!defined $ps or (defined $pcms and $pcms < $ps));
+	}
+	$splitting_args{'allow_split'} = 1 if ((defined $ps and $ps > 0) or
+					       $params{'leom_supported'});
+	$params{'part_size'} = $ps;
+	$params{'part_cache_type'} = 'none';
+	$params{'part_cache_dir'} = undef;
+    } elsif (defined $params{'dle_tape_splitsize'} or
+	     defined $params{'dle_split_diskbuffer'} or
+	     defined $params{'dle_fallback_splitsize'}) {
+	# if any of the dle_* parameters are set, use those to set the part_*
+	# parameters, which are emptied out first.
 
 	$params{'part_size'} = $params{'dle_tape_splitsize'} || 0;
 	$params{'part_cache_type'} = 'none';
@@ -1689,7 +1747,7 @@ sub get_volume {
     my $self = shift;
     my (%params) = @_;
 
-    die "already processing a volume request"
+    confess "already processing a volume request"
 	if ($self->{'volume_cb'});
 
     $self->{'volume_cb'} = $params{'volume_cb'};
@@ -1742,22 +1800,37 @@ sub _start_scanning {
 		if ($params{'label'}) {
 		    $self->{'feedback'}->scribe_notif_log_info(
 			message => "Slot $params{'slot'} with label $params{'label'} is not labelable ");
+		} elsif ($params{'empty'}) {
+		    $self->{'feedback'}->scribe_notif_log_info(
+			message => "Slot $params{'slot'} is empty, autolabel not set");
+		} elsif ($params{'non_amanda'}) {
+		    $self->{'feedback'}->scribe_notif_log_info(
+			message => "Slot $params{'slot'} is a non-amanda volume, autolabel not set");
+		} elsif ($params{'volume_error'}) {
+		    $self->{'feedback'}->scribe_notif_log_info(
+			message => "Slot $params{'slot'} is a volume in error: $params{'err'}, autolabel not set");
+		} elsif ($params{'not_success'}) {
+		    $self->{'feedback'}->scribe_notif_log_info(
+			message => "Slot $params{'slot'} is a device in error: $params{'err'}, autolabel not set");
+		} elsif ($params{'err'}) {
+		    $self->{'feedback'}->scribe_notif_log_info(
+			message => "$params{'err'}");
 		} else {
 		    $self->{'feedback'}->scribe_notif_log_info(
 			message => "Slot $params{'slot'} without label is not labelable ");
 		}
 	    } elsif ($params{'empty'}) {
 		$self->{'feedback'}->scribe_notif_log_info(
-		    message => "Slot $params{'slot'} is empty");
+		    message => "Slot $params{'slot'} is empty, autolabel disabled");
 	    } elsif ($params{'non_amanda'}) {
 		$self->{'feedback'}->scribe_notif_log_info(
-		    message => "Slot $params{'slot'} is a non-amanda volume");
+		    message => "Slot $params{'slot'} is a non-amanda volume, autolabel disabled");
 	    } elsif ($params{'volume_error'}) {
 		$self->{'feedback'}->scribe_notif_log_info(
-		    message => "Slot $params{'slot'} is a volume in error: $params{'err'}");
+		    message => "Slot $params{'slot'} is a volume in error: $params{'err'}, autolabel disabled");
 	    } elsif ($params{'not_success'}) {
 		$self->{'feedback'}->scribe_notif_log_info(
-		    message => "Slot $params{'slot'} is a device in error: $params{'err'}");
+		    message => "Slot $params{'slot'} is a device in error: $params{'err'}, autolabel disabled");
 	    } elsif ($params{'err'}) {
 		$self->{'feedback'}->scribe_notif_log_info(
 		    message => "$params{'err'}");
@@ -1767,6 +1840,9 @@ sub _start_scanning {
 	    } elsif (!defined $params{'label'}) {
 		$self->{'feedback'}->scribe_notif_log_info(
 		    message => "Slot $params{'slot'} without label can be labeled");
+	    } elsif ($params{'relabeled'}) {
+		$self->{'feedback'}->scribe_notif_log_info(
+		    message => "Slot $params{'slot'} with label $params{'label'} will be relabeled");
 	    } else {
 		$self->{'feedback'}->scribe_notif_log_info(
 		    message => "Slot $params{'slot'} with label $params{'label'} is usable");
@@ -1817,10 +1893,10 @@ sub _start_request {
 	    } elsif ($params{'cause'} eq 'error') {
 		$self->{'error_denial_message'} = $params{'message'};
 	    } else {
-		die "bad cause '" . $params{'cause'} . "'";
+		confess "bad cause '" . $params{'cause'} . "'";
 	    }
 	} elsif (!defined $params{'allow'}) {
-	    die "no allow or cause defined";
+	    confess "no allow or cause defined";
 	}
 
 	$self->_maybe_callback();
@@ -1859,7 +1935,12 @@ sub _maybe_callback {
 	my $cb = $self->{'start_finished_cb'};
 	$self->{'start_finished_cb'} = undef;
 
-	$cb->($self->{'scan_error'});
+	if ($self->{'device'}) {
+	    my $allow_take_scribe_from = $self->{'device'}->allow_take_scribe_from();
+	    $cb->($self->{'scan_error'}, $allow_take_scribe_from);
+	} else {
+	    $cb->($self->{'scan_error'}, 0);
+	}
     }
 
     # if the volume_cb is good to get called, call it and reset to the ground state
@@ -1892,6 +1973,8 @@ sub _maybe_callback {
 	$self->{'new_scribe'} = undef;
 
 	$volume_cb->(@volume_cb_args);
+    } elsif (!$self->{'volume_cb'}) {
+	$self->{'scan_finished'} = 0;
     }
 }
 

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -40,6 +41,10 @@
 #include <glib/gprintf.h>
 
 #include "amflock.h"
+
+#define GCC_VERSION (__GNUC__ * 10000 \
+                     + __GNUC_MINOR__ * 100 \
+                     + __GNUC_PATCHLEVEL__)
 
 /*
  * Force large file source even if configure guesses wrong.
@@ -274,6 +279,15 @@ struct iovec {
 #ifdef HAVE_UNISTD_H
 #  include <unistd.h>
 #endif
+
+#if HAVE_EUIDACCESS
+#   define EUIDACCESS euidaccess
+#elif HAVE_EACCESS
+#   define EUIDACCESS eaccess
+#else
+#   define EUIDACCESS access
+#endif
+
 
 #ifdef HAVE_NETINET_IN_H
 #  include <netinet/in.h>
@@ -676,7 +690,7 @@ time_t	unctime(char *timestr);
 
 /* from old bsd-security.c */
 extern int debug;
-extern int check_security(sockaddr_union *, char *, unsigned long, char **);
+extern int check_security(sockaddr_union *, char *, unsigned long, char **, char *);
 
 /*
  * Handle functions which are not always declared on all systems.  This
@@ -1141,7 +1155,6 @@ extern ssize_t writev(int fd, const struct iovec *iov, int iovcnt);
 #    define        OFF_T_STRTOL	 (off_t)strtol
 #  endif
 #endif
-
 
 #define BIND_CYCLE_RETRIES	120		/* Total of 30 minutes */
 

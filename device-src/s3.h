@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -26,6 +27,16 @@
 /*
  * Data types
  */
+
+typedef enum {
+   S3_API_UNKNOWN,
+   S3_API_S3,
+   S3_API_SWIFT_1,
+   S3_API_SWIFT_2,
+   S3_API_OAUTH2,
+   S3_API_CASTOR,
+   S3_API_AWS4
+} S3_api;
 
 /* An opaque handle.  S3Handles should only be accessed from a single
  * thread at any given time, although it is fine to use different handles
@@ -115,57 +126,97 @@ typedef curl_progress_callback s3_progress_func;
 /* This preprocessor magic will enumerate constants named S3_ERROR_XxxYyy for
  * each of the errors in parentheses.
  *
- * see http://docs.amazonwebservices.com/AmazonS3/2006-03-01/ErrorCodeList.html
+ * see http://docs.amazonwebservices.com/AmazonS3/latest/API/ErrorResponses.html
  * for Amazon's breakdown of error responses.
  */
 #define S3_ERROR_LIST \
     S3_ERROR(None), \
+    S3_ERROR(Accepted), \
+    S3_ERROR(AccessDenied), \
     S3_ERROR(AccountProblem), \
     S3_ERROR(AllAccessDisabled), \
     S3_ERROR(AmbiguousGrantByEmailAddress), \
-    S3_ERROR(OperationAborted), \
+    S3_ERROR(AuthenticationRequired), \
     S3_ERROR(BadDigest), \
     S3_ERROR(BucketAlreadyExists), \
     S3_ERROR(BucketAlreadyOwnedByYou), \
     S3_ERROR(BucketNotEmpty), \
+    S3_ERROR(Conflict), \
+    S3_ERROR(Created), \
     S3_ERROR(CredentialsNotSupported), \
+    S3_ERROR(CrossLocationLoggingProhibited), \
+    S3_ERROR(EntityTooSmall), \
     S3_ERROR(EntityTooLarge), \
+    S3_ERROR(ExpiredToken), \
+    S3_ERROR(Forbidden), \
+    S3_ERROR(IllegalVersioningConfigurationException), \
     S3_ERROR(IncompleteBody), \
+    S3_ERROR(IncorrectNumberOfFilesInPostRequest), \
+    S3_ERROR(InlineDataTooLarge), \
     S3_ERROR(InternalError), \
     S3_ERROR(InvalidAccessKeyId), \
+    S3_ERROR(InvalidAddressingHeader), \
     S3_ERROR(InvalidArgument), \
     S3_ERROR(InvalidBucketName), \
+    S3_ERROR(InvalidBucketState), \
     S3_ERROR(InvalidDigest), \
+    S3_ERROR(InvalidLocationConstraint), \
+    S3_ERROR(InvalidPart), \
+    S3_ERROR(InvalidPartOrder), \
+    S3_ERROR(InvalidPayer), \
+    S3_ERROR(InvalidPolicyDocument), \
+    S3_ERROR(InvalidObjectState), \
     S3_ERROR(InvalidRange), \
+    S3_ERROR(InvalidRequest), \
     S3_ERROR(InvalidSecurity), \
     S3_ERROR(InvalidSOAPRequest), \
     S3_ERROR(InvalidStorageClass), \
     S3_ERROR(InvalidTargetBucketForLogging), \
-    S3_ERROR(KeyTooLong), \
+    S3_ERROR(InvalidToken), \
     S3_ERROR(InvalidURI), \
+    S3_ERROR(KeyTooLong), \
     S3_ERROR(MalformedACLError), \
+    S3_ERROR(MalformedPOSTRequest), \
+    S3_ERROR(MalformedXML), \
     S3_ERROR(MaxMessageLengthExceeded), \
+    S3_ERROR(MaxPostPreDataLengthExceededError), \
     S3_ERROR(MetadataTooLarge), \
     S3_ERROR(MethodNotAllowed), \
     S3_ERROR(MissingAttachment), \
     S3_ERROR(MissingContentLength), \
+    S3_ERROR(MissingRequestBodyError), \
     S3_ERROR(MissingSecurityElement), \
     S3_ERROR(MissingSecurityHeader), \
     S3_ERROR(NoLoggingStatusForKey), \
     S3_ERROR(NoSuchBucket), \
     S3_ERROR(NoSuchEntity), \
     S3_ERROR(NoSuchKey), \
+    S3_ERROR(NoSuchLifecycleConfiguration), \
+    S3_ERROR(NoSuchUpload), \
+    S3_ERROR(NoSuchVersion), \
     S3_ERROR(NotImplemented), \
     S3_ERROR(NotSignedUp), \
+    S3_ERROR(NotSuchBucketPolicy), \
+    S3_ERROR(OperationAborted), \
+    S3_ERROR(PermanentRedirect), \
     S3_ERROR(PreconditionFailed), \
+    S3_ERROR(Redirect), \
+    S3_ERROR(RestoreAlreadyInProgress), \
+    S3_ERROR(RequestIsNotMultiPartContent), \
     S3_ERROR(RequestTimeout), \
     S3_ERROR(RequestTimeTooSkewed), \
     S3_ERROR(RequestTorrentOfBucketError), \
     S3_ERROR(SignatureDoesNotMatch), \
+    S3_ERROR(ServiceUnavailable), \
+    S3_ERROR(SlowDown), \
+    S3_ERROR(TemporaryRedirect), \
+    S3_ERROR(TokenRefreshRequired), \
     S3_ERROR(TooManyBuckets), \
+    S3_ERROR(Unauthorized), \
     S3_ERROR(UnexpectedContent), \
-    S3_ERROR(UnresolvableGrantByEmailAddress), \
     S3_ERROR(Unknown), \
+    S3_ERROR(UnresolvableGrantByEmailAddress), \
+    S3_ERROR(UserKeyMustBeSpecified), \
     S3_ERROR(END)
 
 typedef enum {
@@ -233,11 +284,36 @@ s3_init(void);
  * @returns: the new S3Handle
  */
 S3Handle *
-s3_open(const char * access_key, const char *secret_key, const char *host,
+s3_open(const char * access_key, const char *secret_key,
+	const char *swift_account_id, const char *swift_access_key,
+	const char *host,
         const char *service_path, gboolean use_subdomain,
         const char * user_token,
         const char * bucket_location, const char * storage_class,
-	const char * ca_info, const char * server_side_encryption);
+	const char * ca_info, const char * server_side_encryption,
+	const char *proxy,
+	const S3_api s3_api,
+	const char *username,
+	const char *password,
+	const char *tenant_id,
+	const char *tenant_name,
+	const char *client_id,
+	const char *client_secret,
+	const char *refresh_token,
+	const gboolean reuse_connection,
+	const long  timeout,
+        const char *reps,
+        const char *reps_bucket);
+
+/* latest step of setting up the S3Handle.
+ *
+ * Must be done after all properties are set.
+ *
+ * @param hdl: the S3Handle to set up.
+ * @returns: false if an error occured
+ */
+gboolean
+s3_open2(S3Handle *hdl);
 
 /* Deallocate an S3Handle
  *
@@ -415,6 +491,19 @@ s3_delete(S3Handle *hdl,
           const char *bucket,
           const char *key);
 
+/* Delete multiple file.
+ *
+ * @param hdl: the S3Handle object
+ * @param bucket: the bucket to delete from
+ * @param key: the key array to delete
+ * @returns: 0 on sucess, 1 if multi_delete is not supported, 2 if an error
+ *           occurs; a non-existent file is I{not} considered an error.
+ */
+int
+s3_multi_delete(S3Handle *hdl,
+                const char *bucket,
+                const char **key);
+
 /* Create a bucket.
  *
  * @param hdl: the S3Handle object
@@ -423,7 +512,8 @@ s3_delete(S3Handle *hdl,
  */
 gboolean
 s3_make_bucket(S3Handle *hdl,
-               const char *bucket);
+               const char *bucket,
+	       const char *project_id);
 
 /* Check if a bucket exists.
  *
@@ -433,7 +523,8 @@ s3_make_bucket(S3Handle *hdl,
  */
 gboolean
 s3_is_bucket_exists(S3Handle *hdl,
-                    const char *bucket);
+                    const char *bucket,
+		    const char *project_id);
 
 /* Delete a bucket
  *

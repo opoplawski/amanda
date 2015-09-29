@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -87,6 +88,9 @@ static amregex_t init_re_table[] = {
   AM_IGNORE_RE(": Directory is new$"),
   AM_IGNORE_RE(": Directory has been renamed"),
 
+  /* GNU tar 1.27 */
+  AM_NORMAL_RE(": directory is on a different filesystem; not dumped"),
+
   /* GNU tar 1.13.17 will print this warning when (not) backing up a
      Unix named socket.  */
   AM_NORMAL_RE(": socket ignored$"),
@@ -122,6 +126,7 @@ typedef struct application_argument_s {
     int        argc;
     char     **argv;
     int        verbose;
+    int        ignore_zeros;
 } application_argument_t;
 
 enum { CMD_ESTIMATE, CMD_BACKUP };
@@ -137,6 +142,7 @@ static void amgtar_build_exinclude(dle_t *dle, int verbose,
 				   int *nb_include, char **file_include);
 static char *amgtar_get_incrname(application_argument_t *argument, int level,
 				 FILE *mesgstream, int command);
+static void check_no_check_device(void);
 static GPtrArray *amgtar_build_argv(application_argument_t *argument,
 				char *incrname, char **file_exclude,
 				char **file_include, int command);
@@ -194,6 +200,7 @@ static struct option long_options[] = {
     {"include-list-glob", 1, NULL, 34},
     {"exclude-list-glob", 1, NULL, 35},
     {"verbose"          , 1, NULL, 36},
+    {"ignore-zeros"     , 1, NULL, 37},
     {NULL, 0, NULL, 0}
 };
 
@@ -296,6 +303,7 @@ main(
 #else
     gnutar_path = NULL;
 #endif
+    gnutar_listdir = NULL;
     gnutar_directory = NULL;
     gnutar_onefilesystem = 1;
     gnutar_atimepreserve = 1;
@@ -368,6 +376,7 @@ main(
     argument.include_list_glob = NULL;
     argument.exclude_list_glob = NULL;
     argument.verbose = 0;
+    argument.ignore_zeros = 1;
     init_dle(&argument.dle);
     argument.dle.record = 0;
 
@@ -499,6 +508,9 @@ main(
 	case 36: if (optarg  && strcasecmp(optarg, "YES") == 0)
 		     argument.verbose = 1;
 		 break;
+	case 37: if (strcasecmp(optarg, "YES") != 0)
+		     argument.ignore_zeros = 0;
+		 break;
 	case ':':
 	case '?':
 		break;
@@ -521,6 +533,10 @@ main(
 
     if (config_errors(NULL) >= CFGERR_ERRORS) {
 	g_critical(_("errors processing config file"));
+    }
+
+    if (!gnutar_listdir) {
+	gnutar_listdir = g_strdup(getconf_str(CNF_GNUTAR_LIST_DIR));
     }
 
     re_table = build_re_table(init_re_table, normal_message, ignore_message,
@@ -547,7 +563,6 @@ main(
 	}
     }
 
-    gnutar_listdir = getconf_str(CNF_GNUTAR_LIST_DIR);
     if (strlen(gnutar_listdir) == 0)
 	gnutar_listdir = NULL;
 
@@ -602,6 +617,9 @@ main(
 	fprintf(stderr, "Unknown command `%s'.\n", command);
 	exit (1);
     }
+
+    dbclose();
+
     return 0;
 }
 
@@ -672,7 +690,6 @@ amgtar_selfcheck(
 	printf(_("ERROR [GNUTAR program not available]\n"));
     }
 
-    set_root_privs(1);
     if (gnutar_listdir && strlen(gnutar_listdir) == 0)
 	gnutar_listdir = NULL;
     if (gnutar_listdir) {
@@ -681,6 +698,7 @@ amgtar_selfcheck(
 	printf(_("ERROR [No GNUTAR-LISTDIR]\n"));
     }
 
+    set_root_privs(1);
     if (gnutar_directory) {
 	check_dir(gnutar_directory, R_OK);
     } else if (argument->dle.device) {
@@ -1117,7 +1135,13 @@ amgtar_restore(
     if (gnutar_xattrs)
 	g_ptr_array_add(argv_ptr, stralloc("--xattrs"));
     /* ignore trailing zero blocks on input (this was the default until tar-1.21) */
-    g_ptr_array_add(argv_ptr, stralloc("--ignore-zeros"));
+    if (argument->ignore_zeros) {
+	g_ptr_array_add(argv_ptr, stralloc("--ignore-zeros"));
+    }
+    if (argument->tar_blocksize) {
+	g_ptr_array_add(argv_ptr, stralloc("--blocking-factor"));
+	g_ptr_array_add(argv_ptr, stralloc(argument->tar_blocksize));
+    }
     g_ptr_array_add(argv_ptr, stralloc("-xpGvf"));
     g_ptr_array_add(argv_ptr, stralloc("-"));
     if (gnutar_directory) {
@@ -1151,7 +1175,7 @@ amgtar_restore(
 	if (argument->dle.disk) {
 	    sdisk = sanitise_filename(argument->dle.disk);
 	} else {
-	    sdisk = g_strdup_printf("no_dle-%d", getpid());
+	    sdisk = g_strdup_printf("no_dle-%d", (int)getpid());
 	}
 	exclude_filename= vstralloc(AMANDA_TMPDIR, "/", "exclude-", sdisk,  NULL);
 	exclude_list = fopen(argument->dle.exclude_list->first->name, "r");
@@ -1191,7 +1215,7 @@ amgtar_restore(
 	if (argument->dle.disk) {
 	    sdisk = sanitise_filename(argument->dle.disk);
 	} else {
-	    sdisk = g_strdup_printf("no_dle-%d", getpid());
+	    sdisk = g_strdup_printf("no_dle-%d", (int)getpid());
 	}
 	include_filename = vstralloc(AMANDA_TMPDIR, "/", "include-", sdisk,  NULL);
 	include = fopen(include_filename, "w");
@@ -1420,7 +1444,12 @@ amgtar_get_incrname(
 		errmsg = vstrallocf(_("writing to %s: %s"),
 				     incrname, strerror(errno));
 		dbprintf("%s\n", errmsg);
-		return NULL;
+		if (command == CMD_ESTIMATE) {
+		    fprintf(mesgstream, "ERROR %s\n", errmsg);
+		} else {
+		    fprintf(mesgstream, "? %s\n", errmsg);
+		}
+		exit(1);
 	    }
 	}
 
@@ -1428,26 +1457,77 @@ amgtar_get_incrname(
 	    errmsg = vstrallocf(_("reading from %s: %s"),
 			         inputname, strerror(errno));
 	    dbprintf("%s\n", errmsg);
-	    return NULL;
+	    if (command == CMD_ESTIMATE) {
+		fprintf(mesgstream, "ERROR %s\n", errmsg);
+	    } else {
+		fprintf(mesgstream, "? %s\n", errmsg);
+	    }
+	    exit(1);
 	}
 
 	if (close(infd) != 0) {
 	    errmsg = vstrallocf(_("closing %s: %s"),
 			         inputname, strerror(errno));
 	    dbprintf("%s\n", errmsg);
-	    return NULL;
+	    if (command == CMD_ESTIMATE) {
+		fprintf(mesgstream, "ERROR %s\n", errmsg);
+	    } else {
+		fprintf(mesgstream, "? %s\n", errmsg);
+	    }
+	    exit(1);
 	}
 	if (close(outfd) != 0) {
 	    errmsg = vstrallocf(_("closing %s: %s"),
 			         incrname, strerror(errno));
 	    dbprintf("%s\n", errmsg);
-	    return NULL;
+	    dbprintf("%s\n", errmsg);
+	    if (command == CMD_ESTIMATE) {
+		fprintf(mesgstream, "ERROR %s\n", errmsg);
+	    } else {
+		fprintf(mesgstream, "? %s\n", errmsg);
+	    }
+	    exit(1);
 	}
 
 	amfree(inputname);
 	amfree(basename);
     }
     return incrname;
+}
+
+static void
+check_no_check_device(void)
+{
+    if (gnutar_checkdevice == 0) {
+	GPtrArray *argv_ptr = g_ptr_array_new();
+	int dumpin;
+	int dataf;
+	int outf;
+	int size;
+	char buf[32768];
+
+	g_ptr_array_add(argv_ptr, gnutar_path);
+	g_ptr_array_add(argv_ptr, "-x");
+	g_ptr_array_add(argv_ptr, "--no-check-device");
+	g_ptr_array_add(argv_ptr, "-f");
+	g_ptr_array_add(argv_ptr, "-");
+	g_ptr_array_add(argv_ptr, NULL);
+
+	pipespawnv(gnutar_path, STDIN_PIPE|STDOUT_PIPE|STDERR_PIPE, 0,
+			     &dumpin, &dataf, &outf, (char **)argv_ptr->pdata);
+	aclose(dumpin);
+	aclose(dataf);
+	size = read(outf, buf, 32767);
+	if (size > 0) {
+	    buf[size] = '\0';
+	    if (strstr(buf, "--no-check-device")) {
+		g_debug("disabling --no-check-device since '%s' doesn't support it", gnutar_path);
+		gnutar_checkdevice = 1;
+	    }
+	}
+	aclose(outf);
+	g_ptr_array_free(argv_ptr, TRUE);
+    }
 }
 
 GPtrArray *amgtar_build_argv(
@@ -1464,6 +1544,7 @@ GPtrArray *amgtar_build_argv(
     GPtrArray *argv_ptr = g_ptr_array_new();
     GSList    *copt;
 
+    check_no_check_device();
     amgtar_build_exinclude(&argument->dle, 1,
 			   &nb_exclude, file_exclude,
 			   &nb_include, file_include);

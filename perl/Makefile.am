@@ -53,7 +53,7 @@ endif
 html: make_html amperl.css $(PM_FILES)
 	rm -rf html-tmp/ && mkdir html-tmp/
 	cp amperl.css html-tmp/
-	$(PERL) make_html html-tmp/ $(PM_FILES)
+	$(PERL) make_html --homeurl "$(POD_HOME_URL)" html-tmp/ $(PM_FILES)
 	cd html-tmp/ && tar -zcf $(abs_builddir)/html.tar.gz .
 	rm -rf html-tmp/
 ##
@@ -376,9 +376,11 @@ if WANT_SERVER
 # PACKAGE: Amanda::Report::*
 AmandaReportdir = $(amperldir)/Amanda/Report
 AmandaReport_DATA = \
-	Amanda/Report/xml.pm \
+	Amanda/Report/human.pm \
+	Amanda/Report/json.pm \
+	Amanda/Report/json_raw.pm \
 	Amanda/Report/postscript.pm \
-	Amanda/Report/human.pm
+	Amanda/Report/xml.pm
 PM_FILES += $(AmandaReport_DATA)
 EXTRA_DIST += $(AmandaReport_DATA)
 endif
@@ -489,6 +491,13 @@ DISTCLEANFILES += Amanda/Constants.pm
 Amanda_DATA += Amanda/Script_App.pm
 EXTRA_DIST += Amanda/Script_App.pm
 
+# PACKAGE: Amanda::Extract
+Amanda_DATA += Amanda/Extract.pm
+EXTRA_DIST += Amanda/Extract.pm
+
+# PACKAGE: Amanda::Message
+Amanda_DATA += Amanda/Message.pm
+EXTRA_DIST += Amanda/Message.pm
 
 if WANT_SERVER
 # PACKAGE: Amanda::Holding
@@ -526,7 +535,7 @@ EXTRA_DIST += Amanda/Application/Zfs.pm
 if WANT_CYGWIN_COPY_PERL_DLL
 amperldirauto="$(DESTDIR)$(amperldir)/auto/Amanda"
 install-data-hook:
-	@for cygdll in $(amperldirauto)/bin/cyg*.dll; do \
+	@for cygdll in $(wildcard $(amperldirauto)/bin/cyg*.dll); do \
 	    destfname=`echo $$cygdll|sed 's!/bin/cyg\([^.]*\).dll!/\1/\1.dll!'`; \
 	   cp "$$cygdll" "$$destfname"; \
 	done

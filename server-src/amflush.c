@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -44,6 +45,7 @@
 
 static struct option long_options[] = {
     {"version"         , 0, NULL,  1},
+    {"exact-match"     , 0, NULL,  2},
     {NULL, 0, NULL, 0}
 };
 
@@ -100,6 +102,7 @@ main(
     char **config_options;
     find_result_t *holding_files;
     disklist_t holding_disklist = { NULL, NULL };
+    gboolean exact_match = FALSE;
 
     /*
      * Configure program for internationalization:
@@ -133,7 +136,8 @@ main(
 	case 1  : printf("amflush-%s\n", VERSION);
 		  return(0);
 		  break;
-
+	case 2  : exact_match = TRUE;
+		  break;
 	case 'b': batch = 1;
 		  break;
 	case 'f': foreground = 1;
@@ -161,7 +165,7 @@ main(
     }
 
     if(argc < 1) {
-	error(_("Usage: amflush [-b] [-f] [-s] [-D date]* [-o configoption]* <confdir> [host [disk]* ]*"));
+	error(_("Usage: amflush [-b] [-f] [-s] [-D date]* [--exact-match] [-o configoption]* <confdir> [host [disk]* ]*"));
 	/*NOTREACHED*/
     }
 
@@ -184,6 +188,8 @@ main(
 
     dbrename(get_config_name(), DBG_SUBDIR_SERVER);
 
+    holding_cleanup(NULL, stdout);
+
     /* load DLEs from the holding disk, in case there's anything to flush there */
     search_holding_disk(&holding_files, &holding_disklist);
     /* note that the dumps are added to the global disklist, so we need not
@@ -191,7 +197,7 @@ main(
      * dumps will be filtered properly by match_disklist, setting the dp->todo
      * flag appropriately. */
 
-    errstr = match_disklist(&diskq, argc-1, argv+1);
+    errstr = match_disklist(&diskq, exact_match, argc-1, argv+1);
     if (errstr) {
 	g_printf(_("%s"),errstr);
 	amfree(errstr);
@@ -221,7 +227,7 @@ main(
     }
     if (access(conf_logfile, F_OK) == 0) {
 	char *process_name = get_master_process(conf_logfile);
-	error(_("%s exists: %s is already running, or you must run amcleanup"), conf_logfile, process_name);
+	error(_("%s exists: %s is already running, please run amcleanup if you wish to abort the current process and clean up open log files"), conf_logfile, process_name);
 	/*NOTREACHED*/
     }
 
@@ -290,10 +296,19 @@ main(
 
     for(dp = diskq.head; dp != NULL; dp = dp->next) {
 	if(dp->todo) {
-	    char *qname;
-	    qname = quote_string(dp->name);
-	    log_add(L_DISK, "%s %s", dp->host->hostname, qname);
-	    amfree(qname);
+	    /* is it holding_list */
+	    for (holding_file=holding_list; holding_file != NULL;
+					    holding_file = holding_file->next) {
+		dumpfile_t file;
+		holding_file_get_dumpfile((char *)holding_file->data, &file);
+		if (g_str_equal(dp->host->hostname, file.name) &&
+		    g_str_equal(dp->name, file.disk)) {
+		    char *qname;
+		    qname = quote_string(dp->name);
+		    log_add(L_DISK, "%s %s", dp->host->hostname, qname);
+		    amfree(qname);
+		}
+	    }
 	}
     }
 

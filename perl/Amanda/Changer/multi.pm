@@ -1,8 +1,9 @@
-# Copyright (c) 2008,2009,2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -48,7 +49,8 @@ See the amanda-changers(7) manpage for usage information.
 #
 # The device state is shared between all changers accessing the same changer.
 # It is a hash with keys:
-#   current_slot - the unaliased device name of the current slot
+#   current_slot - the unaliased device name of the current slot (deprecated)
+#   current_slot_by_config - hash (by config name) of the unaliased device name of the current slot
 #   slots - see below
 #
 # The 'slots' key is a hash, with unaliased device name as keys and hashes
@@ -111,6 +113,8 @@ sub new {
     }
 
     my $state_filename = Amanda::Config::config_dir_relative($config->{'changerfile'});
+    my $lock_timeout = $config->{'lock-timeout'};
+    Amanda::Debug::debug("Using state file: $state_filename");
 
     my $self = {
 	slots => \@slots,
@@ -121,6 +125,7 @@ sub new {
 	state_filename => $state_filename,
 	first_slot => $first_slot,
 	last_slot => $last_slot,
+	'lock-timeout' => $lock_timeout,
     };
 
     bless ($self, $class);
@@ -187,6 +192,7 @@ sub reset {
 	$params{state} = $state;
 	$slot = $self->{first_slot};
 	$self->{slot} = $slot;
+	undef $state->{'slots'};
 	$self->_set_current($state, $slot);
 
 	$finished_cb->();
@@ -313,10 +319,22 @@ sub update {
 	    # parse the string just like use-slots, using a hash for uniqueness
 	    my %changed;
 	    for my $range (split ',', $params{'changed'}) {
-		my ($first, $last) = ($range =~ /(\d+)(?:-(\d+))?/);
-		$last = $first unless defined($last);
-		for ($first .. $last) {
-		    $changed{$_} = undef;
+		if ($range eq 'error') {
+		    foreach ($self->{first_slot} .. ($self->{last_slot} - 1)) {
+			my $slot = "$_";
+			my $unaliased = $self->{unaliased}->{$slot};
+			if (defined $state->{slots}->{$unaliased} and
+			    defined $state->{slots}->{$unaliased}->{device_status} and
+			    $state->{slots}->{$unaliased}->{device_status} != $DEVICE_STATUS_SUCCESS) {
+			    $changed{$slot} = undef;
+			}
+		    }
+		} else {
+		    my ($first, $last) = ($range =~ /(\d+)(?:-(\d+))?/);
+		    $last = $first unless defined($last);
+		    for ($first .. $last) {
+			$changed{$_} = undef;
+		    }
 		}
 	    }
 
@@ -409,7 +427,8 @@ sub inventory {
 	    my $s = { slot => $slot,
 		      state => $state->{slots}->{$unaliased}->{state} || Amanda::Changer::SLOT_UNKNOWN,
 		      reserved => $self->_is_slot_in_use($state, $slot) };
-	    if (defined $state->{slots}->{$unaliased}) {
+	    if (defined $state->{slots}->{$unaliased} and
+		exists $state->{slots}->{$unaliased}->{device_status}) {
 		$s->{'device_status'} =
 			      $state->{slots}->{$unaliased}->{device_status};
 		if ($s->{'device_status'} != $DEVICE_STATUS_SUCCESS) {
@@ -556,6 +575,27 @@ sub _slot_exists {
     return 0;
 }
 
+sub set_error_to_unknown {
+    my $self  = shift;
+    my %params = @_;
+    my $state;
+    $self->with_locked_state($self->{'state_filename'},
+			     $params{'set_to_unknown_cb'}, sub {
+	my ($state, $set_to_unknown_cb) = @_;
+	foreach ($self->{first_slot} .. ($self->{last_slot} - 1)) {
+	    my $slot = "$_";
+	    my $unaliased = $self->{unaliased}->{$slot};
+	    if (defined $state->{slots}->{$unaliased}->{'device_error'} and
+		$state->{slots}->{$unaliased}->{'device_error'} eq
+		$params{'error_message'}) {
+		$state->{slots}->{$unaliased}->{'device_status'} = undef;
+		$state->{slots}->{$unaliased}->{'device_error'} = undef;
+	    }
+	}
+	$set_to_unknown_cb->();
+    });
+}
+
 sub _update_slot_state {
     my $self = shift;
     my %params = @_;
@@ -616,14 +656,21 @@ sub _get_next {
 # Get the 'current' slot
 sub _get_current {
     my ($self, $state) = @_;
+    my $slot;
 
     return $self->{slot} if defined $self->{slot};
-    if (defined $state->{current_slot}) {
-	my $slot = $self->{number}->{$state->{current_slot}};
-	# return the slot if it exist.
-	return $slot if $slot >= $self->{'first_slot'} && $slot < $self->{'last_slot'};
-	Amanda::Debug::debug("statefile current_slot is not configured");
+    if (defined $state->{current_slot_by_config}{Amanda::Config::get_config_name()}) {
+	$slot = $self->{number}->{$state->{current_slot_by_config}{Amanda::Config::get_config_name()}};
+    } elsif (defined $state->{current_slot}) {
+	$slot = $self->{number}->{$state->{current_slot}};
     }
+
+    # return the slot if it exist.
+    return $slot if defined $slot and
+		    $slot >= $self->{'first_slot'} and
+		    $slot < $self->{'last_slot'};
+    Amanda::Debug::debug("statefile current_slot is not configured");
+
     # return the first slot
     return $self->{first_slot};
 }
@@ -633,7 +680,7 @@ sub _set_current {
     my ($self, $state, $slot) = @_;
 
     $self->{slot} = $slot;
-    $state->{current_slot} = $self->{unaliased}->{$slot};
+    $state->{current_slot_by_config}{Amanda::Config::get_config_name()} = $self->{unaliased}->{$slot};
 }
 
 package Amanda::Changer::multi::Reservation;

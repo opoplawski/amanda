@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2009, 2010 Zmanda Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -89,15 +90,48 @@ sub _user_msg_fn {
             print STDERR "Searching for label '$params{'label'}':";
         } elsif (exists($params{'slot_result'}) ||
                  exists($params{'search_result'})) {
-            if (defined($params{'err'})) {
+            if (defined($params{'err'}) and
+		(ref($params{'err'}) eq "HASH" ||
+		 ref($params{'err'}) eq "Amanda::Changer::Error")) {
                 if (exists($params{'search_result'}) &&
                     defined($params{'err'}->{'this_slot'})) {
                     print STDERR "slot $params{'err'}->{'this_slot'}:";
                 }
                 print STDERR " $params{'err'}\n";
+            } elsif (!$params{'res'}) {
+                my $volume_label = $params{'label'};
+		if ($params{'slot'}) {
+		    print STDERR "slot $params{'slot'}:";
+		}
+                if ($params{'active'}) {
+                    print STDERR " volume '$volume_label' is still active and cannot be overwritten\n";
+                } elsif ($params{'does_not_match_labelstr'}) {
+                    print STDERR " volume '$volume_label' does not match labelstr '$params{'labelstr'}'\n";
+                } elsif ($params{'not_in_tapelist'}) {
+                    print STDERR " volume '$volume_label' is not in the tapelist\n"
+		} elsif ($params{'non_amanda'}) {
+		    print STDERR " not an amanda volume\n";
+		} elsif ($params{'volume_error'}) {
+		    print STDERR " $params{'err'}\n";
+		} elsif ($params{'not_autolabel'}) {
+		    print STDERR " The volume can't be labelled\n";
+		} elsif ($params{'empty'}) {
+		    print STDERR " The volume is empty\n";
+		} elsif ($params{'not_success'}) {
+		    print STDERR " $params{'err'}\n";
+                } else {
+                    print STDERR " volume '$volume_label'\n";
+                }
             } else { # res must be defined
+		my $directtcp = "";
                 my $res = $params{'res'};
                 my $dev = $res->{'device'};
+
+		if ($dev->directtcp_supported()) {
+		    $directtcp = "DIRECTTCP ";
+		}
+		print STDOUT "DATA-PATH AMANDA $directtcp\n";
+
                 if (exists($params{'search_result'})) {
                     print STDERR "found in slot $res->{'this_slot'}:";
                 }
@@ -119,7 +153,12 @@ sub _user_msg_fn {
                 } elsif ($dev->status & $DEVICE_STATUS_VOLUME_UNLABELED and
                          $dev->volume_header and
                          $dev->volume_header->{'type'} == $Amanda::Header::F_WEIRD) {
-                    print STDERR " contains a non-Amanda volume; check and relabel it with 'amlabel -f'\n";
+		    my $autolabel = getconf($CNF_AUTOLABEL);
+		    if ($autolabel->{'non_amanda'}) {
+			print STDERR " contains a non-Amanda volume\n";
+		    } else {
+			print STDERR " contains a non-Amanda volume; check and relabel it with 'amlabel -f'\n";
+		    }
                 } elsif ($dev->status & $DEVICE_STATUS_VOLUME_ERROR) {
                     my $message = $dev->error_or_status();
                     print STDERR " Can't read label: $message\n";
@@ -184,7 +223,13 @@ sub do_check {
 	if (defined $res->{'device'} and defined $res->{'device'}->volume_label()) {
 	    print "Will $modestr to volume '$label' in slot $slot.\n";
 	} else {
-	    print "Will $modestr label '$label' to new volume in slot $slot.\n";
+	    my $header = $res->{'device'}->volume_header();
+	    if (defined $header and defined $header->{'type'} and
+		$header->{'type'} == $Amanda::Header::F_WEIRD) {
+		print "Will $modestr label '$label' to non-Amanda volume in slot $slot.\n";
+	    } else {
+		print "Will $modestr label '$label' to new volume in slot $slot.\n";
+	    }
 	}
 
 	$steps->{'check_access_type'}->();
@@ -219,7 +264,7 @@ sub do_check {
 	    return $steps->{'release'}->();
 	}
 
-	print "Writing label '$label' to check writablility\n";
+	print "Writing label '$label' to check writability\n";
 	if (!$res->{'device'}->start($ACCESS_WRITE, $label, "X")) {
 	    print "ERROR: writing to volume: " . $res->{'device'}->error_or_status(), "\n";
 	    $exit_status = 1;

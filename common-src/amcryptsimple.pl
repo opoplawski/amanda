@@ -1,10 +1,11 @@
 #!@PERL@ -w
 #
-# Copyright (c) 2007,2008 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -56,15 +57,33 @@ $ENV{'GNUPGHOME'} = "$AMANDA_HOME/.gnupg";
 sub do_gpg_agent() {
     my $path=`which gpg-agent 2>/dev/null`;
     chomp $path;
+    if ($path =~ /^no gpg-agent/) {
+	return "";
+    }
+
     if (-x $path) {
 	return "gpg-agent --daemon --";
     }
     return ""
 }
 
+sub which_gpg() {
+    my $path=`which gpg2 2>/dev/null`;
+    if (!$path || $path =~ /no gpg2/) {
+        $path=`which gpg 2>/dev/null`;
+    }
+    if (!$path || $path =~ /no gpg/) {
+        die("no gpg or gpg2");
+    }
+    chomp $path;
+    return $path;
+}
+
 sub encrypt() {
     my $gpg_agent_cmd = do_gpg_agent();
-    system "$gpg_agent_cmd gpg --batch --no-secmem-warning --disable-mdc --symmetric --cipher-algo AES256 --passphrase-fd 3  3<$AM_PASS";
+    my $gpg = which_gpg();
+    system "$gpg_agent_cmd $gpg --batch -z 0 --no-secmem-warning --disable-mdc --symmetric --cipher-algo AES256 --passphrase-fd 3  3<$AM_PASS";
+    sleep(2); # allow gpg-agent the time to exit
     if ($? == -1) {
 	print STDERR "failed to execute gpg: $!\n";
 	exit (1);
@@ -79,7 +98,9 @@ sub encrypt() {
 
 sub decrypt() {
     my $gpg_agent_cmd = do_gpg_agent();
-    system "$gpg_agent_cmd gpg --batch --quiet --no-mdc-warning --decrypt --passphrase-fd 3  3<$AM_PASS";
+    my $gpg = which_gpg();
+    system "$gpg_agent_cmd $gpg --batch --quiet --no-mdc-warning --decrypt --passphrase-fd 3  3<$AM_PASS";
+    sleep(2); # allow gpg-agent the time to exit
     if ($? == -1) {
 	print STDERR "failed to execute gpg: $!\n";
 	exit (1);

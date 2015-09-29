@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -143,7 +144,7 @@ start_backup(
     char *encryptopt = skip_argument;
     char *qdisk;
     char *config;
-    level_t *alevel = (level_t *)dle->levellist->data;
+    am_level_t *alevel = (am_level_t *)dle->levellist->data;
     int      level  = alevel->level;
 
     g_snprintf(level_str, SIZEOF(level_str), "%d", level);

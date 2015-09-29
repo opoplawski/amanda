@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -574,6 +575,8 @@ dumper_cmd(
     char *cmdline = NULL;
     char number[NUM_STR_SIZE];
     char numberport[NUM_STR_SIZE];
+    char maxdumps[NUM_STR_SIZE];
+    char maxwarnings[NUM_STR_SIZE];
     char *o, *oo;
     char *device;
     char *features;
@@ -600,6 +603,7 @@ dumper_cmd(
 	    char *qclient_username;
 	    char *qclient_port;
 	    char *qssh_keys;
+	    char *d_prop;
 
 	    if (dp->application != NULL) {
 		application = lookup_application(dp->application);
@@ -610,9 +614,16 @@ dumper_cmd(
 	    qname = quote_string(dp->name);
 	    g_snprintf(number, SIZEOF(number), "%d", sched(dp)->level);
 	    g_snprintf(numberport, SIZEOF(numberport), "%d", dumper->output_port);
+	    g_snprintf(maxdumps, SIZEOF(maxdumps), "%d", dp->host->maxdumps);
+	    g_snprintf(maxwarnings, SIZEOF(maxwarnings), "%d", dp->max_warnings);
 	    features = am_feature_to_string(dp->host->features);
 	    if (am_has_feature(dp->host->features, fe_req_xml)) {
 		o = xml_optionstr(dp, 1);
+
+		d_prop = xml_dumptype_properties(dp);
+		vstrextend(&o, d_prop, NULL);
+		amfree(d_prop);
+
 		if (application) {
 		    char *xml_app;
 		    xml_app = xml_application(dp, application,
@@ -644,6 +655,7 @@ dumper_cmd(
 	    cmdline = vstralloc(cmdstr[cmd],
 			    " ", disk2serial(dp),
 			    " ", numberport,
+			    " ", maxdumps,
 			    " ", dp->host->hostname,
 			    " ", features,
 			    " ", qname,
@@ -658,6 +670,7 @@ dumper_cmd(
 			    " ", dp->auth,
 			    " ", data_path_to_string(dp->data_path),
 			    " ", dp->dataport_list,
+			    " ", maxwarnings,
 			    " |", o,
 			    "\n", NULL);
 	    amfree(qplugin);
@@ -967,6 +980,11 @@ update_info_dumper(
 
     level = sched(dp)->level;
 
+    if (origsize == 0 || dumpsize == 0) {
+	g_debug("not updating because origsize or dumpsize is 0");
+	return;
+    }
+
     conf_infofile = config_dir_relative(getconf_str(CNF_INFOFILE));
     if (open_infofile(conf_infofile)) {
 	error(_("could not open info db \"%s\""), conf_infofile);
@@ -1065,6 +1083,11 @@ update_info_taper(
     info_t info;
     stats_t *infp;
     int rc;
+
+    if (!label) {
+	log_add(L_ERROR, "update_info_taper without label");
+	return;
+    }
 
     rc = open_infofile(getconf_str(CNF_INFOFILE));
     if(rc) {

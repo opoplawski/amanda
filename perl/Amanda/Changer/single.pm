@@ -1,8 +1,9 @@
-# Copyright (c) 2008,2009,2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -20,6 +21,7 @@ package Amanda::Changer::single;
 
 use strict;
 use warnings;
+use Carp;
 use vars qw( @ISA );
 @ISA = qw( Amanda::Changer );
 
@@ -64,6 +66,11 @@ sub new {
 	config => $config,
 	device_name => $device_name,
 	reserved => 0,
+	state => undef,
+	device_status => undef,
+	f_type => undef,
+	label => undef,
+	'scan-require-update' => 1,
     };
 
     bless ($self, $class);
@@ -77,12 +84,21 @@ sub load {
 
     return if $self->check_error($params{'res_cb'});
 
-    die "no res_cb supplied" unless (exists $params{'res_cb'});
+    confess "no res_cb supplied" unless (exists $params{'res_cb'});
 
     if ($self->{'reserved'}) {
-	return $self->make_error("failed", $params{'res_cb'},
-	    reason => "volinuse",
-	    message => "'$self->{device_name}' is already reserved");
+	if (($self->{'label'} and $params{'label'} and
+	     $self->{'label'} eq $params{'label'}) or
+	    ($self->{'slot'} and $params{'slot'} and
+	     $self->{'slot'} eq $params{'slot'})) {
+	    return $self->make_error("failed", $params{'res_cb'},
+		reason => "volinuse",
+		message => "'$self->{device_name}' is already reserved");
+	} else {
+	    return $self->make_error("failed", $params{'res_cb'},
+		reason => "driveinuse",
+		message => "'$self->{device_name}' is already reserved");
+	}
     }
 
     if (keys %{$params{'except_slots'}} > 0) {
@@ -92,6 +108,10 @@ sub load {
     }
 
     my $device = Amanda::Device->new($self->{'device_name'});
+    $self->{'state'} = Amanda::Changer::SLOT_FULL;
+    $self->{'device_status'} = $device->status();
+    $self->{'f_type'} = undef;
+    $self->{'label'} = undef;
     if ($device->status() != $DEVICE_STATUS_SUCCESS) {
 	return $self->make_error("fatal", $params{'res_cb'},
 	    message => "error opening device '$self->{device_name}': " . $device->error_or_status());
@@ -107,6 +127,14 @@ sub load {
 
     my $res = Amanda::Changer::single::Reservation->new($self, $device);
     $device->read_label();
+    $self->{'state'} = Amanda::Changer::SLOT_FULL;
+    $self->{'device_status'} = $device->status;
+    if ($device->status == $DEVICE_STATUS_SUCCESS) {
+	$self->{'label'} = $device->volume_label;
+    }
+    if (defined $device->volume_header) {
+	$self->{'f_type'} = $device->volume_header->{type};
+    }
     $params{'res_cb'}->(undef, $res);
 }
 
@@ -115,14 +143,23 @@ sub inventory {
     my %params = @_;
 
     my @inventory;
-    my $s = { slot => 0,
-	      state => undef,
-	      device_status => undef,
-	      f_type => undef,
-	      label => undef };
+    my $s = { slot => 1,
+	      state => $self->{'state'},
+	      device_status => $self->{'device_status'},
+	      f_type => $self->{'f_type'},
+	      label => $self->{'label'} };
     push @inventory, $s;
 
     $params{'inventory_cb'}->(undef, \@inventory);
+}
+
+sub update {
+    my $self = shift;
+
+    $self->{'state'} = undef;
+    $self->{'device_status'} = undef;
+    $self->{'f_type'} = undef;
+    $self->{'label'} = undef;
 }
 
 sub info_key {

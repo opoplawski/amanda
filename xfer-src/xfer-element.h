@@ -1,10 +1,11 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
- * Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -29,6 +30,7 @@
 #include <glib-object.h>
 #include "xfer.h"
 #include "amanda.h"
+#include "util.h"
 #include "directtcp.h"
 
 typedef enum {
@@ -151,6 +153,15 @@ typedef struct XferElement {
 
     /* maximum size to transfer */
     gint64 size;
+
+    /* for crc computation */
+    crc_t crc;
+
+    /* if input must be drained in case of write error */
+    gboolean must_drain;
+    gboolean drain_mode;
+    gboolean cancel_on_success;
+    gboolean ignore_broken_pipe;
 } XferElement;
 
 /*
@@ -282,6 +293,12 @@ typedef struct {
      * @returns: array of mech pairs, terminated by <NONE,NONE>
      */
     xfer_element_mech_pair_t *(*get_mech_pairs)(XferElement *elt);
+
+    /* If the data must be drained without error if writing fail
+     *
+     * @param elt: the XferElement
+     */
+    gboolean (*must_drain)(XferElement *elt);
 
     /* class variables */
 
@@ -416,6 +433,15 @@ XferElement * xfer_source_directtcp_listen(void);
  */
 XferElement * xfer_source_directtcp_connect(DirectTCPAddr *addrs);
 
+/* A transfer filter that copy its input to its output but contimue to read
+ *  the input if it get a Broken pipe to the output.
+ *
+ * Implemented in filter-drain.c
+ *
+ * @return: new element
+ */
+XferElement *xfer_filter_drain(void);
+
 /* A transfer filter that executes an external application, feeding it data on
  * stdin and taking the results on stdout.
  *
@@ -429,7 +455,10 @@ XferElement * xfer_source_directtcp_connect(DirectTCPAddr *addrs);
  * @return: new element
  */
 XferElement *xfer_filter_process(gchar **argv,
-    gboolean need_root);
+    gboolean need_root,
+    gboolean must_drain,
+    gboolean cancel_on_success,
+    gboolean ignore_broken_pipe);
 
 /* A transfer filter that just applies a bytewise XOR transformation to the data
  * that passes through it.
@@ -509,5 +538,7 @@ XferElement * xfer_dest_directtcp_connect(DirectTCPAddr *addrs);
  * @return: new element
  */
 XferElement * xfer_dest_directtcp_listen(void);
+
+int get_err_fd(XferElement *elt);
 
 #endif

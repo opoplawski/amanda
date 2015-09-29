@@ -150,7 +150,9 @@ AC_DEFUN([AMANDA_PROG_LPR],
 		lp|*/lp) amanda_cv_printer_flag="-d";;
 	    esac
 	])
-	if test -z "$amanda_cv_printer_flag"; then
+	if test ! -z "$amanda_cv_printer_flag"; then
+	    LPRFLAG=$amanda_cv_printer_flag
+	else
 	    AMANDA_MSG_WARN([WARNING: amanda will always print to the default printer])
 	fi
     fi
@@ -363,6 +365,9 @@ AC_DEFUN([AMANDA_PROG_SSH],
 [
     AC_REQUIRE([AMANDA_INIT_PROGS])
     AC_PATH_PROGS(SSH, ssh, , $LOCSYSPATH)
+    if test x"$SSH" = x""; then
+	SSH='/usr/bin/ssh'
+    fi
     AC_DEFINE_UNQUOTED(SSH, "$SSH", [Path to the SSH binary])
 ])
 
@@ -395,3 +400,9 @@ AC_DEFUN([AMANDA_PROG_LEX],
     fi
 ])
 
+AC_DEFUN([AMANDA_PROG_NC],
+[
+    AC_PATH_PROG(NC,nc,,$LOCSYSPATH)
+    AC_PATH_PROG(NC6,nc6,,$LOCSYSPATH)
+    AC_PATH_PROG(NETCAT,netcat,,$LOCSYSPATH)
+])

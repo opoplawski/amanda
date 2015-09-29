@@ -1,8 +1,9 @@
-# Copyright (c) 2007, 2008, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -16,7 +17,7 @@
 # Contact information: Zmanda Inc, 465 S. Mathilda Ave., Suite 300
 # Sunnyvale, CA 94086, USA, or: http://www.zmanda.com
 
-use Test::More tests => 43;
+use Test::More tests => 54;
 use strict;
 use warnings;
 
@@ -67,10 +68,20 @@ is(@specs, 2, "parse of four elements with no flags yields 2 specs");
 is_deeply([ ds2av($specs[0]) ], [ "h1", "d1", undef, undef, undef ], "..first spec is correct");
 is_deeply([ ds2av($specs[1]) ], [ "h2", "d2", undef, undef, undef ], "..second spec is correct");
 
+@specs = Amanda::Cmdline::parse_dumpspecs(["h1", "d1", "h2", "d2"], $Amanda::Cmdline::CMDLINE_EXACT_MATCH);
+is(@specs, 2, "parse of four elements with CMDLINE_EXACT_MATCH yields 2 specs");
+is_deeply([ ds2av($specs[0]) ], [ "=h1", "=d1", undef, undef, undef ], "..first spec is correct");
+is_deeply([ ds2av($specs[1]) ], [ "=h2", "=d2", undef, undef, undef ], "..second spec is correct");
+
 @specs = Amanda::Cmdline::parse_dumpspecs(["h1", "d1", "ds1", "h2", "d2", "ds2" ], $Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP);
 is(@specs, 2, "parse of six elements with CMDLINE_PARSE_DATESTAMP yields 2 specs");
 is_deeply([ ds2av($specs[0]) ], [ "h1", "d1", "ds1", undef, undef ], "..first spec is correct");
 is_deeply([ ds2av($specs[1]) ], [ "h2", "d2", "ds2", undef, undef ], "..second spec is correct");
+
+@specs = Amanda::Cmdline::parse_dumpspecs(["h1", "d1", "ds1", "h2", "d2", "ds2" ], $Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP | $Amanda::Cmdline::CMDLINE_EXACT_MATCH);
+is(@specs, 2, "parse of six elements with CMDLINE_PARSE_DATESTAMP and CMDLINE_EXACT_MATCH yields 2 specs");
+is_deeply([ ds2av($specs[0]) ], [ "=h1", "=d1", "=ds1", undef, undef ], "..first spec is correct");
+is_deeply([ ds2av($specs[1]) ], [ "=h2", "=d2", "=ds2", undef, undef ], "..second spec is correct");
 
 @specs = Amanda::Cmdline::parse_dumpspecs(["h1", "d1", "ds1", "lv1", "h2", "d2", "ds2", "lv2" ],
 		$Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP | $Amanda::Cmdline::CMDLINE_PARSE_LEVEL);
@@ -78,10 +89,21 @@ is(@specs, 2, "parse of eight elements with CMDLINE_PARSE_DATESTAMP and CMDLINE_
 is_deeply([ ds2av($specs[0]) ], [ "h1", "d1", "ds1", "lv1", undef ], "..first spec is correct");
 is_deeply([ ds2av($specs[1]) ], [ "h2", "d2", "ds2", "lv2", undef ], "..second spec is correct");
 
+@specs = Amanda::Cmdline::parse_dumpspecs(["h1", "d1", "ds1", "lv1", "h2", "d2", "ds2", "lv2" ],
+		$Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP | $Amanda::Cmdline::CMDLINE_PARSE_LEVEL | $Amanda::Cmdline::CMDLINE_EXACT_MATCH);
+is(@specs, 2, "parse of eight elements with CMDLINE_PARSE_DATESTAMP, CMDLINE_PARSE_LEVEL and CMDLINE_EXACT_MATCH yields 2 specs");
+is_deeply([ ds2av($specs[0]) ], [ "=h1", "=d1", "=ds1", "=lv1", undef ], "..first spec is correct");
+is_deeply([ ds2av($specs[1]) ], [ "=h2", "=d2", "=ds2", "=lv2", undef ], "..second spec is correct");
+
 @specs = Amanda::Cmdline::parse_dumpspecs(["h1", "d1", "ds1", "lv1" ],
 		$Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP | $Amanda::Cmdline::CMDLINE_PARSE_LEVEL);
 is(@specs, 1, "parse of four elements with CMDLINE_PARSE_DATESTAMP and CMDLINE_PARSE_LEVEL yields one spec");
 is_deeply([ ds2av($specs[0]) ], [ "h1", "d1", "ds1", "lv1", undef ], "..which is correct");
+
+@specs = Amanda::Cmdline::parse_dumpspecs(["h1", "d1", "ds1", "lv1" ],
+		$Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP | $Amanda::Cmdline::CMDLINE_PARSE_LEVEL | $Amanda::Cmdline::CMDLINE_EXACT_MATCH);
+is(@specs, 1, "parse of four elements with CMDLINE_PARSE_DATESTAMP, CMDLINE_PARSE_LEVEL and CMDLINE_EXACT_MATCH yields one spec");
+is_deeply([ ds2av($specs[0]) ], [ "=h1", "=d1", "=ds1", "=lv1", undef ], "..which is correct");
 
 @specs = Amanda::Cmdline::parse_dumpspecs(["h1", "d1", "ds1" ],
 		$Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP | $Amanda::Cmdline::CMDLINE_PARSE_LEVEL);

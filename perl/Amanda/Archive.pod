@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -80,6 +81,10 @@ Amanda::Archive::Archive->new >> are equivalent.
 Create a new archive for reading ("<") or writing (">") from or to
 file C<$fd> (a file handle or integer file descriptor).
 
+=item C<size()>
+
+Return the number of bytes already written to the archive.
+
 =item C<new_file($filename, $want_posn)>
 
 Create a new C<Amanda::Archive::File> object with the given filename
@@ -119,6 +124,10 @@ Create a new C<Amanda::Archive::Attribute> object.  Equivalent to
 
   Amanda::Archive::Attr->new($file, $attrid);
 
+=item C<size()>
+
+Return the size on the archive of all attributes of the file.
+
 =item C<close()>
 
 Close this file, writing an EOF record.
@@ -138,6 +147,17 @@ if C<$eoa> is true.
 
 Copy data from C<$fh> to this attribute, adding an EOA
 (end-of-attribute) bit if C<$eoa> is true.
+
+=item C<add_data_fd_in_thread($fh, $eoa)>
+
+Same as C<add_data_fd> but the copy is done in a newly created thread.
+This function return immediately.
+Nothing should be done on the archive while it is running.
+The next action on the archive must be $attr->close().
+
+=item C<size()>
+
+Return the size of the data of the attribute.
 
 =item C<close()>
 

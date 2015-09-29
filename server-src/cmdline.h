@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007,2008 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * 
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  * 
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -38,7 +39,7 @@
  *
  * All strings in this struct are independently malloc()ed.
  */
-typedef struct dumpspec_s {
+typedef struct dumpspec_t {
     char *host;
     char *disk;
     char *datestamp;
@@ -118,6 +119,8 @@ cmdline_parse_dumpspecs(
 #    define CMDLINE_PARSE_LEVEL (1<<1)
     /* an empty argv should result in a wildcard dumpspec */
 #    define CMDLINE_EMPTY_TO_WILDCARD (1<<2)
+    /* use exact match instead of host and disk expression */
+#    define CMDLINE_EXACT_MATCH (1<<3)
 
 /*
  * Formatting

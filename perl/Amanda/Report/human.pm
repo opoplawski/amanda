@@ -1,8 +1,9 @@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -21,6 +22,7 @@ package Amanda::Report::human;
 
 use strict;
 use warnings;
+use Carp;
 
 use POSIX;
 use Data::Dumper;
@@ -83,8 +85,9 @@ sub divzero_col
 sub swrite
 {
     my ( $format, @args ) = @_;
+    my @copy_args = @args;
     local $^A = "";
-    formline( $format, @args );
+    formline( $format, @copy_args );
     return $^A;
 }
 
@@ -145,11 +148,10 @@ sub tounits {
 
 sub new
 {
-    my ($class, $report, $fh, $config_name, $logfname) = @_;
+    my ($class, $report, $config_name, $logfname) = @_;
 
     my $self = {
         report      => $report,
-        fh          => $fh,
         config_name => $config_name,
         logfname    => $logfname,
 
@@ -292,7 +294,8 @@ sub calculate_stats
     if ($report->get_flag("got_finish")) {
         $total_stats->{total_time} =
              $report->get_program_info("driver",  "time", 0)
-          || $report->get_program_info("amflush", "time", 0);
+          || $report->get_program_info("amflush", "time", 0)
+          || $report->get_program_info("amvault", "time", 0);
     } else {
         $total_stats->{total_time} =
           $total_stats->{taper_time} + $total_stats->{planner_time};
@@ -308,12 +311,26 @@ sub calculate_stats
     return;
 }
 
-sub print_human_amreport
+sub zprint
+{
+    my $self = shift;
+
+    print {$self->{'fh'}} @_;
+}
+
+sub zsprint
+{
+    my $self = shift;
+
+    return ($self->zprint(@_));
+}
+
+sub write_report
 {
     my ( $self, $fh ) = @_;
 
-    $fh ||= $self->{fh}
-      || die "error: no file handle given to print_human_amreport\n";
+    $fh || confess "error: no file handle given to Amanda::Report::human::write_report\n";
+    $self->{fh} = $fh;
 
     ## collect statistics
     $self->calculate_stats();
@@ -340,8 +357,8 @@ sub print_human_amreport
     $self->output_summary();
 
     ## footer
-    print $fh
-      "(brought to you by Amanda version $Amanda::Constants::VERSION)\n";
+    $self->zprint(
+      "(brought to you by Amanda version $Amanda::Constants::VERSION)\n");
 
     return;
 }
@@ -363,19 +380,19 @@ sub print_header
     my $date  = POSIX::strftime('%B %e, %Y', 0, 0, 0, $day, $month - 1, $year - 1900);
     $date =~ s/  / /g; # get rid of intervening space
 
-    print $fh "*** THE DUMPS DID NOT FINISH PROPERLY!\n\n"
+    $self->zprint("*** THE DUMPS DID NOT FINISH PROPERLY!\n\n")
       unless ($report->{flags}{got_finish});
 
     my $header_format = <<EOF;
-@<<<<<<<: @<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<...
+@<<<<<<<: ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<...
 EOF
 
     if ($hostname) {
-	print $fh swrite($header_format, "Hostname", $hostname);
-	print $fh swrite($header_format, "Org",      $org);
-	print $fh swrite($header_format, "Config",   $config_name);
-	print $fh swrite($header_format, "Date",     $date);
-	print $fh "\n";
+	$self->zprint(swrite($header_format, "Hostname", $hostname));
+	$self->zprint(swrite($header_format, "Org",      $org));
+	$self->zprint(swrite($header_format, "Config",   $config_name));
+	$self->zprint(swrite($header_format, "Date",     $date));
+	$self->zprint("\n");
     }
 
     return;
@@ -396,7 +413,7 @@ sub output_tapeinfo
     my %incr_stats  = %{ $self->{incr_stats} };
     my %total_stats = %{ $self->{total_stats} };
 
-    if (@$tape_labels > 0) {
+    if (getconf($CNF_REPORT_USE_MEDIA) and @$tape_labels > 0) {
 
 	# slightly different sentence depending on the run type
         my $tapelist_str;
@@ -409,7 +426,7 @@ sub output_tapeinfo
 	}
         $tapelist_str .= (@$tape_labels > 1) ? "to tapes " : "to tape ";
         $tapelist_str .= join(", ", @$tape_labels) . ".\n";
-        print $fh $tapelist_str;
+        $self->zprint($tapelist_str);
     }
 
     if (my $tape_error =
@@ -419,9 +436,9 @@ sub output_tapeinfo
 	    # remove leading [ and trailling ]
 	    $tape_error =~ s/^\[//;
 	    $tape_error =~ s/\]$//;
-	    print $fh "Not using all tapes because $tape_error.\n";
+	    $self->zprint("Not using all tapes because $tape_error.\n");
 	} else {
-            print $fh "*** A TAPE ERROR OCCURRED: $tape_error.\n";
+            $self->zprint("*** A TAPE ERROR OCCURRED: $tape_error.\n");
 	}
         #$tape_error =~ s{^no-tape }{};
     }
@@ -430,7 +447,7 @@ sub output_tapeinfo
     ## information.  If this dump is the most recent, output holding
     ## disk info.
     if ($report->get_flag("historical")) {
-        print $fh "Some dumps may have been left in the holding disk.\n\n"
+        $self->zprint("Some dumps may have been left in the holding disk.\n\n")
           if $report->get_flag("degraded_mode")
 
     } else {
@@ -445,59 +462,62 @@ sub output_tapeinfo
           sprintf("%.0f%s", $self->tounits($h_size), $self->{disp_unit});
 
         if ($h_size > 0) {
-            print $fh
-              "There are $h_size_u of dumps left in the holding disk.\n";
+            $self->zprint(
+              "There are $h_size_u of dumps left in the holding disk.\n");
 
             (getconf($CNF_AUTOFLUSH))
-              ? print $fh "They will be flushed on the next run.\n\n"
-              : print $fh "Run amflush to flush them to tape.\n\n";
+              ? $self->zprint("They will be flushed on the next run.\n\n")
+              : $self->zprint("Run amflush to flush them to tape.\n\n");
 
         } elsif ($report->get_flag("degraded_mode")) {
-            print $fh "No dumps are left in the holding disk.\n\n";
+            $self->zprint("No dumps are left in the holding disk.\n\n");
         }
     }
 
-    my $nb_new_tape = 0;
-    my $run_tapes   = getconf($CNF_RUNTAPES);
+    if (getconf($CNF_REPORT_NEXT_MEDIA)) {
+	my $nb_new_tape = 0;
+	my $run_tapes   = getconf($CNF_RUNTAPES);
 
-    if ($run_tapes) {
-        ($run_tapes > 1)
-          ? print $fh "The next $run_tapes tapes Amanda expects to use are: "
-          : print $fh "The next tape Amanda expects to use is: ";
-    }
+	my $text;
+	if ($run_tapes) {
+            $text = ($run_tapes > 1)
+	          ? "The next $run_tapes tapes Amanda expects to use are: "
+	          : "The next tape Amanda expects to use is: ";
+	}
 
-    my $first = 1;
-    foreach my $i ( 0 .. ( $run_tapes - 1 ) ) {
+	my $first = 1;
+	foreach my $i ( 0 .. ( $run_tapes - 1 ) ) {
 
-        if ( my $tape_label =
-            Amanda::Tapelist::get_last_reusable_tape_label($i) ) {
+            if ( my $tape_label =
+		Amanda::Tapelist::get_last_reusable_tape_label($i) ) {
 
-	    if ($nb_new_tape) {
-		print $fh ", " if !$first;
-		print $fh "$nb_new_tape new tape"
-			. ( $nb_new_tape > 1 ? "s" : "" );
-		$nb_new_tape = 0;
+		if ($nb_new_tape) {
+		    $text .= ", " if !$first;
+		    $text .= "$nb_new_tape new tape"
+			    . ( $nb_new_tape > 1 ? "s" : "" );
+		    $nb_new_tape = 0;
+		    $first = 0;
+		}
+
+		$text .=
+		    ($first ? "" : ", ") .
+		    $tape_label;
 		$first = 0;
-	    }
+            } else {
+		$nb_new_tape++;
+            }
+	}
 
-	    print $fh
-		$first ? "" : ", ",
-		$tape_label;
-	    $first = 0;
-        } else {
-            $nb_new_tape++;
-        }
+	if ($nb_new_tape) {
+            $text .= ", " if !$first;
+            $text .= "$nb_new_tape new tape"
+              . ( $nb_new_tape > 1 ? "s" : "" );
+	}
+	$self->zprint("$text.\n");
+
+	my $new_tapes = Amanda::Tapelist::list_new_tapes(getconf($CNF_RUNTAPES));
+	$self->zprint("$new_tapes\n") if $new_tapes;
     }
-
-    if ($nb_new_tape) {
-        print $fh ", " if !$first;
-        print $fh "$nb_new_tape new tape"
-          . ( $nb_new_tape > 1 ? "s" : "" );
-    }
-    print $fh ".\n";
-
-    my $new_tapes = Amanda::Tapelist::list_new_tapes(getconf($CNF_RUNTAPES));
-    print $fh "$new_tapes\n" if $new_tapes;
 
     return;
 }
@@ -644,10 +664,10 @@ sub output_stats
     my $fh     = $self->{fh};
     my $report = $self->{report};
 
+    $self->zprint("\n");
+    $self->zprint("\n");
+    $self->zsprint("STATISTICS:\n");
     my $header = <<EOF;
-
-
-STATISTICS:
                           Total       Full      Incr.   Level:#
                         --------   --------   --------  --------
 EOF
@@ -675,99 +695,99 @@ EOF
     $tapesize = 100 * 1024 * 1024 if !$tapesize;
     $marksize = 1 * 1024 * 1024   if !$marksize;
 
-    print $fh $header;
+    $self->zprint($header);
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Estimate Time (hrs:min)",
         hrmn( $total_stats->{planner_time} ),
         "", "", ""
-    );
+    ));
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Run Time (hrs:min)",
         hrmn( $total_stats->{total_time} ),
         "", "", ""
-    );
+    ));
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Dump Time (hrs:min)",
         hrmn( $total_stats->{dumper_time} ),
         hrmn( $full_stats->{dumper_time} ),
         hrmn( $incr_stats->{dumper_time} ),
 	""
-    );
+    ));
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Output Size (meg)",
         sprintf( "%8.1f", $total_stats->{outsize}/1024 ),
         sprintf( "%8.1f", $full_stats->{outsize}/1024 ),
         sprintf( "%8.1f", $incr_stats->{outsize}/1024 ),
         "",
-    );
+    ));
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Original Size (meg)",
         sprintf( "%8.1f", $total_stats->{origsize}/1024 ),
         sprintf( "%8.1f", $full_stats->{origsize}/1024 ),
         sprintf( "%8.1f", $incr_stats->{origsize}/1024 ),
         "",
-    );
+    ));
 
     my $comp_size = sub {
         my ($stats) = @_;
         return divzero(100 * $stats->{outsize}, $stats->{origsize});
     };
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Avg Compressed Size (%)",
         $comp_size->($total_stats),
         $comp_size->($full_stats),
         $comp_size->($incr_stats),
         "",
-    );
+    ));
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "DLEs Dumped",
         sprintf("%4d", $total_stats->{dumpdisk_count}),
         sprintf("%4d", $full_stats->{dumpdisk_count}),
         sprintf("%4d", $incr_stats->{dumpdisk_count}),
         (has_incrementals($self->{dumpdisks}) ? by_level_count($self->{dumpdisks}) : "")
-    );
+    ));
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Avg Dump Rate (k/s)",
         divzero_wide( $total_stats->{outsize}, $total_stats->{dumper_time} ),
         divzero_wide( $full_stats->{outsize},  $full_stats->{dumper_time} ),
         divzero_wide( $incr_stats->{outsize},  $incr_stats->{dumper_time} ),
         ""
-    );
-    print $fh "\n";
+    ));
+    $self->zprint("\n");
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Tape Time (hrs:min)",
         hrmn( $total_stats->{taper_time} ),
         hrmn( $full_stats->{taper_time} ),
         hrmn( $incr_stats->{taper_time} ),
 	""
-    );
+    ));
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Tape Size (meg)",
         sprintf( "%8.1f", $total_stats->{tapesize}/1024 ),
         sprintf( "%8.1f", $full_stats->{tapesize}/1024 ),
         sprintf( "%8.1f", $incr_stats->{tapesize}/1024 ),
         ""
-    );
+    ));
 
     my $tape_usage = sub {
         my ($stat_ref) = @_;
@@ -781,21 +801,21 @@ EOF
         );
     };
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Tape Used (%)",
         $tape_usage->($total_stats),
         $tape_usage->($full_stats),
         $tape_usage->($incr_stats),
 	""
-    );
+    ));
 
     my $nb_incr_dle = 0;
     my @incr_dle = @{$self->{tapedisks}};
     foreach my $level (1 .. $#incr_dle) {
 	$nb_incr_dle += $incr_dle[$level];
     }
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "DLEs Taped",
         $self->{tapedisks}[0] + $nb_incr_dle,
@@ -806,11 +826,11 @@ EOF
             ? by_level_count($self->{tapedisks})
             : ""
         )
-    );
+    ));
 
     # NOTE: only print out the per-level tapeparts if there are
     # incremental tapeparts
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Parts Taped",
         sprintf("%4d", $total_stats->{tapepart_count}),
@@ -821,18 +841,18 @@ EOF
             ? by_level_count($self->{tapeparts})
             : ""
         )
-    );
+    ));
 
-    print $fh swrite(
+    $self->zprint(swrite(
         $st_format,
         "Avg Tp Write Rate (k/s)",
         divzero_wide( $total_stats->{tapesize}, $total_stats->{taper_time} ),
         divzero_wide( $full_stats->{tapesize},  $full_stats->{taper_time} ),
         divzero_wide( $incr_stats->{tapesize},  $incr_stats->{taper_time} ),
         ""
-    );
+    ));
 
-    print $fh "\n";
+    $self->zprint("\n");
     return;
 }
 
@@ -865,10 +885,10 @@ sub output_tape_stats
     }
     my $ts_format = "  @"
       . '<' x ($label_length - 1)
-      . "@>>>> @>>>>>>>>>>> @>>>>> @>>>> @>>>>\n";
+      . " @>>>>> @>>>>>>>>>>> @>>>>> @>>>> @>>>>\n";
 
-    print $fh "USAGE BY TAPE:\n";
-    print $fh swrite($ts_format, "Label", "Time", "Size", "%", "DLEs", "Parts");
+    $self->zsprint("USAGE BY TAPE:\n");
+    $self->zprint(swrite($ts_format, "Label", "Time", "Size", "%", "DLEs", "Parts"));
 
     my $tapetype_name = getconf($CNF_TAPETYPE);
     my $tapetype      = lookup_tapetype($tapetype_name);
@@ -882,7 +902,7 @@ sub output_tape_stats
 	my $tapeused = $tape->{'kb'};
 	$tapeused += $marksize * (1 + $tape->{'files'});
 
-        print $fh swrite(
+        $self->zprint(swrite(
             $ts_format,
             $label,
             hrmn($tape->{time}),                               # time
@@ -890,9 +910,9 @@ sub output_tape_stats
             divzero(100 * $tapeused, $tapesize),    # % usage
             int($tape->{dle}),                        # # of dles
             int($tape->{files})                       # # of parts
-        );
+        ));
     }
-    print $fh "\n";
+    $self->zprint("\n");
     return;
 }
 
@@ -1013,7 +1033,7 @@ sub output_details
     $self->print_if_def(\@strange_dump_details, "STRANGE DUMP DETAILS:");
     $self->print_if_def($notes,                 "NOTES:");
 
-    print $fh "\n";
+    $self->zprint("\n");
     return;
 }
 
@@ -1054,6 +1074,7 @@ sub output_summary
     my $nodump_PARTIAL_format = get_summary_format($col_spec, 'nodump-PARTIAL', @summary_linedata);
     my $nodump_FAILED_format = get_summary_format($col_spec, 'nodump-FAILED', @summary_linedata);
     my $nodump_FLUSH_format = get_summary_format($col_spec, 'nodump-FLUSH', @summary_linedata);
+    my $nodump_NOT_FLUSHED_format = get_summary_format($col_spec, 'nodump-NOT FLUSHED', @summary_linedata);
     my $skipped_format = get_summary_format($col_spec, 'skipped', @summary_linedata);
 
     ## print the header names
@@ -1063,13 +1084,13 @@ sub output_summary
       $col_spec->[1]->[COLSPEC_WIDTH] +
       $col_spec->[2]->[COLSPEC_PRE_SPACE] +
       $col_spec->[2]->[COLSPEC_WIDTH];
-    my $ds =
+    my $xs =
       $col_spec->[3]->[COLSPEC_WIDTH] +
       $col_spec->[4]->[COLSPEC_PRE_SPACE] +
       $col_spec->[4]->[COLSPEC_WIDTH] +
       $col_spec->[5]->[COLSPEC_PRE_SPACE] +
-      $col_spec->[5]->[COLSPEC_WIDTH] +
-      $col_spec->[6]->[COLSPEC_PRE_SPACE] +
+      $col_spec->[5]->[COLSPEC_WIDTH];
+    my $ds =
       $col_spec->[6]->[COLSPEC_WIDTH] +
       $col_spec->[7]->[COLSPEC_PRE_SPACE] +
       $col_spec->[7]->[COLSPEC_WIDTH];
@@ -1083,46 +1104,50 @@ sub output_summary
     ## centering..
     my $summary_header_format =
       ' ' x ($col_spec->[0]->[COLSPEC_PRE_SPACE] +
-          $hdl + $col_spec->[4]->[COLSPEC_PRE_SPACE])
+          $hdl + $col_spec->[3]->[COLSPEC_PRE_SPACE] + $xs + $col_spec->[6]->[COLSPEC_PRE_SPACE])
       . '@' . '|' x ($ds - 1)
-      . ' ' x $col_spec->[9]->[COLSPEC_PRE_SPACE]
+      . ' ' x $col_spec->[8]->[COLSPEC_PRE_SPACE]
       . '@'. '|' x ($ts - 1) . "\n";
     my $summary_header = swrite($summary_header_format, "DUMPER STATS", "TAPER STATS");
 
     my $summary_dashes =
         ' ' x $col_spec->[0]->[COLSPEC_PRE_SPACE]
       . '-' x $hdl
-      . ' ' x $col_spec->[4]->[COLSPEC_PRE_SPACE]
+      . ' ' x $col_spec->[3]->[COLSPEC_PRE_SPACE]
+      . '-' x $xs
+      . ' ' x $col_spec->[6]->[COLSPEC_PRE_SPACE]
       . '-' x $ds
-      . ' ' x $col_spec->[9]->[COLSPEC_PRE_SPACE]
+      . ' ' x $col_spec->[8]->[COLSPEC_PRE_SPACE]
       . '-' x $ts . "\n";
 
-    print $fh "DUMP SUMMARY:\n";
-    print $fh $summary_header;
-    print $fh sprintf($title_format, map { $_->[COLSPEC_TITLE] } @$col_spec);
-    print $fh $summary_dashes;
+    $self->zsprint("DUMP SUMMARY:\n");
+    $self->zprint($summary_header);
+    $self->zprint(sprintf($title_format, map { $_->[COLSPEC_TITLE] } @$col_spec));
+    $self->zprint($summary_dashes);
 
     ## write out each output line
     for (@summary_linespecs) {
 	my ($type, @data) = @$_;
 	if ($type eq 'full') {
-	    print $fh sprintf($summary_format, @data);
+	    $self->zprint(sprintf($summary_format, @data));
 	} elsif ($type eq 'nodump-PARTIAL') {
-	    print $fh sprintf($nodump_PARTIAL_format, @data);
+	    $self->zprint(sprintf($nodump_PARTIAL_format, @data));
 	} elsif ($type eq 'nodump-FAILED') {
-	    print $fh sprintf($nodump_FAILED_format, @data);
+	    $self->zprint(sprintf($nodump_FAILED_format, @data));
 	} elsif ($type eq 'nodump-FLUSH') {
-	    print $fh sprintf($nodump_FLUSH_format, @data);
+	    $self->zprint(sprintf($nodump_FLUSH_format, @data));
+	} elsif ($type eq 'nodump-NOT FLUSHED') {
+	    $self->zprint(sprintf($nodump_NOT_FLUSHED_format, @data));
 	} elsif ($type eq 'missing') {
-	    print $fh sprintf($missing_format, @data[0..2]);
+	    $self->zprint(sprintf($missing_format, @data[0..2]));
 	} elsif ($type eq 'noflush') {
-	    print $fh sprintf($noflush_format, @data[0..2]);
+	    $self->zprint(sprintf($noflush_format, @data[0..2]));
 	} elsif ($type eq 'skipped') {
-	    print $fh sprintf($skipped_format, @data[0..2]);
+	    $self->zprint(sprintf($skipped_format, @data[0..2]));
 	}
     }
 
-    print $fh "\n";
+    $self->zprint("\n");
     return;
 }
 
@@ -1134,7 +1159,7 @@ sub output_summary
 ##  ('missing', host, disk, '' ..) # MISSING -----
 ##  ('noflush', host, disk, '' ..) # NO FILE TO FLUSH ------
 ##  ('nodump-$msg', host, disk, level, '', out, '--', '',
-##	    '', tapetime, taperate, taperpartial)  # ... {FLUSH|FAILED|PARTIAL} ...
+##	    '', tapetime, taperate, taperpartial)  # ... {FLUSH|NOT FLUSHED|FAILED|PARTIAL} ...
 ##  ('skipped', host, disk, '' ..) # SKIPPED -----
 ##
 ## the taperpartial column is not covered by the columnspec, and "hangs off"
@@ -1181,8 +1206,14 @@ sub get_summary_info
          $dle_info->{'planner'}->{'status'} eq 'fail') or
 	($dle_info->{'driver'} &&
          $dle_info->{'driver'}->{'status'} eq 'fail')) {
-	# Do not report driver error if we have a try
-	if (!exists $alldumps->{$report->{'run_timestamp'}}) {
+
+	# Do not report driver error if we have a try with dumper
+	my $tries = $alldumps->{$report->{'run_timestamp'}};
+	my $to_report = !defined $tries || !@$tries;
+	foreach my $try ( @$tries ) {
+	    $to_report = 1 if !defined $try->{'dumper'};
+	}
+	if ($to_report) {
 	    my @rv;
 	    push @rv, 'nodump-FAILED';
 	    push @rv, $hostname;
@@ -1200,14 +1231,15 @@ sub get_summary_info
 	push @rvs, [@rv];
     } elsif (keys %{$alldumps} == 0) {
 	my @rv;
-	push @rv, $report->get_flag("amflush_run")? 'noflush' : 'missing';
+	push @rv, $report->get_flag("amflush_run")? 'nodump-NOT FLUSHED' : 'missing';
 	push @rv, $hostname;
 	push @rv, $disk_out;
-	push @rv, ("",) x 8;
+	push @rv, ("",) x 9;
 	push @rvs, [@rv];
     }
 
-    while( my ($timestamp, $tries) = each %$alldumps ) {
+    foreach my $timestamp (sort keys %$alldumps) {
+	my $tries = $alldumps->{$timestamp};
 	my $last_try = $tries->[-1];
 	my $level =
 	    exists $last_try->{taper}   ? $last_try->{taper}{level}
@@ -1231,6 +1263,7 @@ sub get_summary_info
 	    if defined $dumper;
 
 	my ( $out_size, $dump_time, $dump_rate, $tape_time, $tape_rate ) = (0) x 5;
+	my $tape_failure_from = '';
 	my ($dumper_status) = "";
 	my $saw_dumper = 0; # no dumper will mean this was a flush
 	my $taper_partial = 0; # was the last taper run partial?
@@ -1250,6 +1283,7 @@ sub get_summary_info
 		$out_size  = $try->{taper}{kb};
 		$tape_time = $try->{taper}{sec};
 		$tape_rate = $try->{taper}{kps};
+		$tape_failure_from = $try->{taper}{failure_from};
 	    } elsif ( exists $try->{taper}
 		&& ( $try->{taper}{status} eq "partial" ) ) {
 
@@ -1258,9 +1292,11 @@ sub get_summary_info
 		$out_size  = $try->{taper}{kb};
 		$tape_time = $try->{taper}{sec} if !$tape_time;
 		$tape_rate = $try->{taper}{kps} if !$tape_rate;
+		$tape_failure_from = $try->{taper}{failure_from};
 	    } elsif (exists $try->{taper} && ( $try->{taper}{status} eq "fail")) {
 		$tape_time = undef;
 		$tape_rate = undef;
+		$tape_failure_from = $try->{taper}{failure_from};
 	    }
 
 	    if (!$out_size &&
@@ -1299,7 +1335,8 @@ sub get_summary_info
 	# pre-format the compression column, with '--' replacing 100% (i.e.,
 	# no compression)
 	my $compression;
-	if (!defined $orig_size || $orig_size == $out_size) {
+	if (!defined $orig_size ||
+	    ($out_size/$orig_size > 0.99  && $out_size/$orig_size < 1.01)) {
 	    $compression = '--';
 	} else {
 	    $compression =
@@ -1326,7 +1363,7 @@ sub get_summary_info
 
 	my @rv;
 
-	if ( !$orig_size && !$out_size && (!defined($tape_time) || !$tape_time)) {
+	if ( !$orig_size && !$out_size && ((!defined($tape_time) || !$tape_time) && !defined($tape_failure_from))) {
 	    push @rv, $report->get_flag("amflush_run")? 'noflush' : 'missing';
 	    push @rv, $hostname;
 	    push @rv, $disk_out;
@@ -1341,20 +1378,27 @@ sub get_summary_info
 	    push @rv, $compression;
 	    push @rv, $dump_time ? $fmt_col_field->(6, mnsc($dump_time)) : "PARTIAL";
 	    push @rv, $dump_rate ? $fmt_col_field->(7, $dump_rate) : "";
-	    push @rv, $fmt_col_field->(8,
+	    if (defined $tape_failure_from and $tape_failure_from eq 'config') {
+		push @rv, $format_space->(8,"");
+		push @rv, $format_space->(9,"");
+	    } else {
+		push @rv, $fmt_col_field->(8,
 		    (defined $tape_time) ?
 			    $tape_time ? mnsc($tape_time) : ""
 			  : "FAILED");
-	    push @rv, (defined $tape_rate) ?
-		$tape_rate ?
-		    $fmt_col_field->(9, $tape_rate)
-		  : $format_space->(9, "")
-	      : $format_space->(9, "FAILED");
+		push @rv, (defined $tape_rate) ?
+			  $tape_rate ?
+			        $fmt_col_field->(9, $tape_rate)
+			      : $format_space->(9, "")
+			  : $format_space->(9, "FAILED");
+	    }
 	    push @rv, $taper_partial? " PARTIAL" : ""; # column 10
 	} else {
 	    my $message = $saw_dumper?
 			    ($dumper_status eq 'failed') ? 'FAILED' : 'PARTIAL'
-			  : 'FLUSH';
+			  : (defined $tape_failure_from and
+			     $tape_failure_from eq 'config') ? 'NOT FLUSHED'
+							     : 'FLUSH';
 	    push @rv, "nodump-$message";
 	    push @rv, $hostname;
 	    push @rv, $disk_out;
@@ -1364,15 +1408,21 @@ sub get_summary_info
 	    push @rv, $compression;
 	    push @rv, '';
 	    push @rv, '';
-	    push @rv, $fmt_col_field->(8,
-		    (defined $tape_time) ?
-			    $tape_time ? mnsc($tape_time) : ""
-			  : "FAILED");
-	    push @rv, (defined $tape_rate) ?
-		$tape_rate ?
-		    $fmt_col_field->(9, $tape_rate)
-		  : $format_space->(9, "")
-	      : $format_space->(9, "FAILED");
+	    if (defined $tape_failure_from and $tape_failure_from eq 'config') {
+		push @rv, $format_space->(8,"");
+		push @rv, $format_space->(9,"");
+		next if !$report->get_flag("amflush_run"); # do not print a line for flush with config error
+	    } else {
+	       push @rv, $fmt_col_field->(8,
+		       (defined $tape_time) ?
+			       $tape_time ? mnsc($tape_time) : ""
+			     : "FAILED");
+	       push @rv, (defined $tape_rate) ?
+		   $tape_rate ?
+		       $fmt_col_field->(9, $tape_rate)
+		     : $format_space->(9, "")
+	         : $format_space->(9, "FAILED");
+	    }
 	    push @rv, $taper_partial? " PARTIAL" : "";
 	}
 	push @rvs, [@rv];
@@ -1518,9 +1568,9 @@ sub set_col_spec
     my $disp_unit = $self->{disp_unit};
 
     $self->{col_spec} = [
-        [ "HostName", 0, 12, 12, 0, "%-*.*s", "HOSTNAME" ],
-        [ "Disk",     1, 11, 11, 0, "%-*.*s", "DISK" ],
-        [ "Level",    1, 1,  1,  0, "%*.*d",  "L" ],
+        [ "HostName", 0, 12, 12, 1, "%-*.*s", "HOSTNAME" ],
+        [ "Disk",     1, 11, 11, 1, "%-*.*s", "DISK" ],
+        [ "Level",    1, 1,  1,  1, "%*.*d",  "L" ],
         [ "OrigKB",   1, 7,  0,  1, "%*.*f",  "ORIG-" . $disp_unit . "B" ],
         [ "OutKB",    1, 7,  0,  1, "%*.*f",  "OUT-" . $disp_unit . "B" ],
         [ "Compress", 1, 6,  1,  1, "%*.*f",  "COMP%" ],
@@ -1539,11 +1589,10 @@ sub apply_col_spec_override
     my ($self) = @_;
     my $col_spec = $self->{col_spec};
 
-    my %col_spec_override = read_col_spec_override();
+    my %col_spec_override = $self->read_col_spec_override();
 
     foreach my $col (@$col_spec) {
         if ( my $col_override = $col_spec_override{ $col->[COLSPEC_NAME] } ) {
-
             my $override_col_val_if_def = sub {
                 my ( $field, $or_num ) = @_;
                 if ( defined $col_override->[$or_num]
@@ -1562,22 +1611,36 @@ sub apply_col_spec_override
 
 sub read_col_spec_override
 {
-    ## takes no arguments
+    my ($self) = @_;
+
     my $col_spec_str = getconf($CNF_COLUMNSPEC) || return;
     my %col_spec_override = ();
+    my $col_spec = $self->{col_spec};
 
     foreach (split(",", $col_spec_str)) {
 
         $_ =~ m/^(\w+)           # field name
                 =([-:\d]+)       # field values
                 $/x
-          or die "error: malformed columnspec string:$col_spec_str";
+          or confess "error: malformed columnspec string:$col_spec_str";
 
         my $field = $1;
+	my $found = 0;
+
+	foreach my $col (@$col_spec) {
+	    if (lc $field eq lc $col->[0]) {
+		$field = $col->[0];
+		$found = 1;
+	    }
+	}
+	if ($found == 0) {
+	    die("Invalid field name: $field");
+	}
+
         my @field_values = split ':', $2;
 
         # too many values
-        die "error: malformed columnspec string:$col_spec_str"
+        confess "error: malformed columnspec string:$col_spec_str"
           if (@field_values > 3);
 
         # all values *should* be in the right place.  If not enough
@@ -1608,11 +1671,13 @@ sub print_if_def
 
     @$msgs or return;    # do not print section if no messages
 
-    print $fh "$header\n";
+    $self->zsprint("\n");
+    $self->zsprint("\n");
+    $self->zsprint("$header\n");
     foreach my $msg (@$msgs) {
-        print $fh "  $msg\n";
+        $self->zprint("  $msg\n");
     }
-    print $fh "\n";
+    $self->zprint("\n");
 }
 
 1;

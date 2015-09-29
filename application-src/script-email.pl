@@ -1,9 +1,10 @@
 #!@PERL@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -172,16 +173,17 @@ sub sendmail {
    my $dest;
    if ($self->{mailto}) {
       my $destcheck = join ',', @{$self->{mailto}};
-      $destcheck =~ /^([a-zA-Z,]*)$/;
+      $destcheck =~ /^(.*)$/;
       $dest = $1;
    } else {
       $dest = "root";
    }
+
+   my $subject =  "$self->{config} $function $self->{host} $self->{disk} $self->{device} " . join (" ", @{$self->{level}});
    my @args = ( "-s", "$self->{config} $function $self->{host} $self->{disk} $self->{device} " . join (" ", @{$self->{level}}), $dest );
-   my $args = join(" ", @args);
-   debug("cmd: $Amanda::Constants::MAILER $args\n");
+   debug("cmd: $Amanda::Constants::MAILER -s \"$subject\" " . $dest);
    my $mail;
-   open $mail, '|-', $Amanda::Constants::MAILER, @args;
+   open $mail, '|-', $Amanda::Constants::MAILER, '-s', $subject, $dest;
    print $mail "$self->{action} $self->{config} $function $self->{host} $self->{disk} $self->{device} ", join (" ", @{$self->{level}}), "\n";
    close $mail;
 }

@@ -30,6 +30,10 @@
 <refsynopsisdiv>
 <cmdsynopsis>
   <command>amadmin</command>    
+    <arg choice='opt'>--version</arg>
+    <arg choice='opt'>--no-default</arg>
+    <arg choice='opt'>--print-source</arg>
+    <arg choice='opt'>--exact-match</arg>
     &configoverride.synopsis;
     <arg choice='plain'><replaceable>config</replaceable></arg>
     <arg choice='plain'><replaceable>command</replaceable></arg>
@@ -47,6 +51,30 @@ Amanda configuration.</para>
 <para>See the
 <manref name="amanda" vol="8"/>
 man page for more details about Amanda.</para>
+</refsect1>
+
+<refsect1><title>OPTIONS</title>
+<variablelist remap='TP'>
+ <varlistentry>
+    <term><option>--version</option></term>
+<listitem><para>Print the version and exit.</para></listitem>
+  </varlistentry>
+ <varlistentry>
+    <term><option>--no-default</option></term>
+<listitem><para>Do not print default values for <emphasis remap='B'>config</emphasis>
+and <emphasis remap='B'>disklist</emphasis> commands.</para></listitem>
+  </varlistentry>
+ <varlistentry>
+    <term><option>--print-source</option></term>
+<listitem><para>Print where a value is defined for <emphasis remap='B'>config</emphasis>
+and <emphasis remap='B'>disklist</emphasis> commands.</para></listitem>
+  </varlistentry>
+ <varlistentry>
+    <term><option>--exact-match</option></term>
+<listitem><para>The host and disk are parsed as exact values</para></listitem>
+  </varlistentry>
+
+</variablelist>
 </refsect1>
 
 <refsect1><title>COMMANDS</title>
@@ -140,10 +168,21 @@ to do a full (level 0) backup during the next Amanda run.</para>
   </listitem>
   </varlistentry>
   <varlistentry>
+  <term><emphasis remap='B'>force-level-1</emphasis> [ <emphasis remap='I'>hostname</emphasis> [ <emphasis remap='I'>disks</emphasis> ]* ]+</term>
+  <listitem>
+<para>Force the
+<emphasis remap='I'>disks</emphasis>
+on
+<emphasis remap='I'>hostname</emphasis>
+to do a level 1 backup during the next Amanda run.</para>
+  </listitem>
+  </varlistentry>
+  <varlistentry>
   <term><emphasis remap='B'>unforce</emphasis> [ <emphasis remap='I'>hostname</emphasis> [ <emphasis remap='I'>disks</emphasis> ]* ]+</term>
   <listitem>
 <para>Undo a previous
-<emphasis remap='B'>force</emphasis>
+<emphasis remap='B'>force</emphasis> or
+<emphasis remap='B'>force-level-1</emphasis>
 command.</para>
   </listitem>
   </varlistentry>
@@ -246,7 +285,7 @@ file, Amanda will treat it as a new disk during the next run.</para>
   </varlistentry>
 
   <varlistentry>
-  <term><emphasis remap='B'>tape</emphasis></term>
+  <term><emphasis remap='B'>tape</emphasis> [ <option>--days</option> <replaceable>&lt;num&gt;</replaceable> ]</term>
   <listitem>
 <para>Display the tape(s) Amanda expects to write to during the next run.
 See also
@@ -261,7 +300,7 @@ levels.</para>
   </listitem>
   </varlistentry>
   <varlistentry>
-  <term><emphasis remap='B'>balance</emphasis> [ <option>--days</option> <replaceable>&lt;num&gt;</replaceable> ]<emphasis remap='B'></emphasis> <emphasis remap='I'></emphasis> <emphasis remap='I'></emphasis></term>
+  <term><emphasis remap='B'>balance</emphasis> [ <option>--days</option> <replaceable>&lt;num&gt;</replaceable> ]</term>
   <listitem>
 <para>Display the distribution of full backups throughout the dump schedule.</para>
   </listitem>

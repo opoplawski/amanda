@@ -158,6 +158,20 @@ tpchanger "aggregate"
 <para>This changer driver allow to use two or more changers or standalone
 drive in sequence.</para>
 
+<refsect3><title>Properties</title>
+<!-- PLEASE KEEP THIS LIST IN ALPHABETICAL ORDER -->
+
+<variablelist>
+<!-- ==== -->
+<varlistentry><term>LOCK-TIMEOUT</term><listitem>
+The time in seconds amanda wait to lock the statefile (default:1000)
+</listitem></varlistentry>
+<!-- ==== -->
+<varlistentry><term>STATE_FILENAME</term><listitem>
+The name of the state file (default: "$CONFIG_DIR/$changer_name.state".
+</listitem></varlistentry>
+</variablelist>
+</refsect3>
 </refsect2>
 
 <refsect2><title>chg-disk:VTAPEROOT (new)</title>
@@ -189,6 +203,10 @@ name="amrestore" vol="8" /> command line.</para>
 <!-- ==== -->
 <varlistentry><term>AUTO-CREATE-SLOT</term><listitem>
 If a <computeroutput>slotN</computeroutput> directory in the range 1 to NUM-SLOT does not already exist, and this property is true, then the changer will create the directory.
+</listitem></varlistentry>
+<!-- ==== -->
+<varlistentry><term>LOCK-TIMEOUT</term><listitem>
+The time in seconds amanda wait to lock the statefile (default:1000)
 </listitem></varlistentry>
 <!-- ==== -->
 <varlistentry><term>MOUNT</term><listitem>
@@ -274,6 +292,10 @@ tpchanger "chg-multi:s3:mycompany-backups/tape-{001..100}"
 This property gives the number of the first slot. The default value is "1".
 </listitem></varlistentry>
 <!-- ==== -->
+<varlistentry><term>LOCK-TIMEOUT</term><listitem>
+The time in seconds amanda wait to lock the statefile (default:1000)
+</listitem></varlistentry>
+<!-- ==== -->
 </variablelist>
 
 </refsect3>
@@ -312,6 +334,10 @@ load the tape.
 amtape CONFIG update 1-3,9=
 </programlisting>
 In this case, the changer marks the stated slots as an unknown state.
+<programlisting>
+amtape CONFIG update error=
+</programlisting>
+In this case, the changer marks all slot in error as an unknown state.
 </para>
 
 </refsect3>
@@ -557,6 +583,10 @@ load the tape.
 amtape CONFIG update 1-3,9=
 </programlisting>
 In this case, the changer marks the stated slots as an unknown state.
+<programlisting>
+amtape CONFIG update error=
+</programlisting>
+In this case, the changer marks all slot in error as an unknown state.
 </para>
 
 </refsect3>
@@ -565,6 +595,11 @@ In this case, the changer marks the stated slots as an unknown state.
 <!-- PLEASE KEEP THIS LIST IN ALPHABETICAL ORDER -->
 
 <variablelist>
+<!-- ==== -->
+<varlistentry><term>BROKEN-DRIVE-LOADED-SLOT</term><listitem>
+Set this boolean property to true if mtx doesn't return correctly which slot
+is loaded in a drive.
+</listitem></varlistentry>
 <!-- ==== -->
 <varlistentry><term>DRIVE-CHOICE</term><listitem>
 This property controls the algorithm used to select a drive in which to load a
@@ -627,6 +662,10 @@ The default value is <command>"0s poll 3s until 2m"</command>.
 </para>
 </listitem></varlistentry>
 <!-- ==== -->
+<varlistentry><term>LOCK-TIMEOUT</term><listitem>
+The time in seconds amanda wait to lock the statefile (default:1000)
+</listitem></varlistentry>
+<!-- ==== -->
 <varlistentry><term>MTX</term><listitem>
 The path to the 'mtx' binary.  The default value is defined at compile time.
 </listitem></varlistentry>
@@ -669,7 +708,7 @@ not found in these slots, except for import/export purposes.
 
 <para>Tape libraries are fickle, and in many cases will report that an
 operation is complete when it is still in progress.  Chg-robot takes several
-timing-related properties to accomodate such behavior.</para>
+timing-related properties to accommodate such behavior.</para>
 
 <para>A typical sequence of operations performed during a load are: get library
 status, eject a tape, unload the tape back to a storage slot, load a new tape,

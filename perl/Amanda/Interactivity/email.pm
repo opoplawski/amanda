@@ -1,8 +1,9 @@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -23,6 +24,8 @@ use warnings;
 use POSIX qw( :errno_h );
 use vars qw( @ISA );
 use IPC::Open3;
+use File::stat;
+use Time::localtime;
 @ISA = qw( Amanda::Interactivity );
 
 use Amanda::Paths;
@@ -51,6 +54,10 @@ sub new {
 	check_file_src => undef,
 	properties     => $properties,
     };
+
+    if (defined $self->{'properties'}->{'check-file'}) {
+	my $check_file = $self->{'properties'}->{'check-file'}->{'values'}->[0];
+    }
 
     return bless ($self, $class);
 }
@@ -111,6 +118,7 @@ sub user_request {
 
     my $send_email_cb;
     $send_email_cb = sub {
+	$self->{'send_email_src'}->remove() if defined $self->{'send_email_src'};
 	$self->{'send_email_src'} = undef;
 	debug("cmd: " . join(" ", @cmd) . "\n");
 	my ($pid, $fh);
@@ -126,9 +134,19 @@ sub user_request {
 	if ($check_file) {
 	    print {$fh} "or write the name of a new changer in '$check_file'\n";
 	    print {$fh} "or write 'abort' in the file to abort the scan.\n";
+	    $self->{'check_file_mtime'} = 0;
+	    $self->{'check_file_ctime'} = 0;
+	    if (-e $check_file) {
+		$self->{'check_file_mtime'} = (stat($check_file))->mtime;
+		$self->{'check_file_ctime'} = (stat($check_file))->ctime;
+		if (!-f $check_file) {
+		    print {$fh} "\nThe check-file '$check_file' is not a flat file.\n";
+		} elsif (!-r $check_file) {
+		    print {$fh} "\nThe check-file '$check_file' is not readable.\n";
+		}
+	    }
 	}
 	close $fh;
-	unlink($check_file);
 
 	if ($resend_delay) {
 	    $self->{'send_email_src'} = Amanda::MainLoop::call_after($resend_delay, $send_email_cb);
@@ -137,28 +155,52 @@ sub user_request {
 
     my $check_file_cb;
     $check_file_cb = sub {
+	$self->{'check_file_src'}->remove() if $self->{'check_file_src'};
 	$self->{'check_file_src'} = undef;
 
-	if (-f $check_file) {
-	    my $fh;
-	    open ($fh, '<' , $check_file);
-	    my $line = <$fh>;
-	    chomp $line;
-	    $self->abort();
-	    if ($line =~ /^abort$/i) {
-		return $params{'request_cb'}->(
-			Amanda::Changer::Error->new('fatal',
-				message => "Aborted by user"));
-	    } else {
-		return $params{'request_cb'}->(undef, $line);
+	if (-e $check_file) {
+	    $self->{'send_email_src'}->remove() if $self->{'send_email_src'};
+	    $self->{'send_email_src'} = undef;
+	    my $check_file_mtime = (stat($check_file))->mtime;
+	    my $check_file_ctime = (stat($check_file))->ctime;
+	    if ($self->{'check_file_mtime'} < $check_file_mtime or
+		$self->{'check_file_ctime'} < $check_file_ctime) {
+
+		$self->{'check_file_ctime'} = $check_file_ctime;
+		$self->{'check_file_mtime'} = $check_file_mtime;
+
+		if (!-f $check_file || !-r $check_file) {
+		    $send_email_cb->();
+		} else {
+		    my $fh;
+		    open ($fh, '<' , $check_file);
+		    my $line = <$fh>;
+		    close($fh);
+		    $send_email_cb = undef;
+		    $check_file_cb = undef;
+		    if ($line) {
+			chomp $line;
+			$self->abort();
+			if ($line =~ /^abort$/i) {
+			    return $params{'request_cb'}->(
+				Amanda::Changer::Error->new('fatal',
+					message => "Aborted by user"));
+			} else {
+			    return $params{'request_cb'}->(undef, $line);
+			}
+		    } else {
+			return $params{'request_cb'}->(undef, '');
+		    }
+		}
 	    }
+	} else {
+	    $self->{'check_file_mtime'} = 0;
 	}
 	$self->{'check_file_src'} = Amanda::MainLoop::call_after($check_file_delay, $check_file_cb);
     };
 
     $send_email_cb->();
     if ($check_file) {
-	unlink($check_file);
 	$check_file_cb->();
     }
 }

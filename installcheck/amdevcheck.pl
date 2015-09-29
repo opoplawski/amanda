@@ -1,8 +1,9 @@
-# Copyright (c) 2007, 2008, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -50,7 +51,7 @@ $testconf->write();
 # test some defaults
 ok(run('amdevcheck', 'TESTCONF'), "run succeeds with a null tapedev");
 is_deeply([ sort split "\n", $Installcheck::Run::stdout],
-	  [ sort "MESSAGE Can't open NULL device for reading or appending.", "DEVICE_ERROR"],
+	  [ sort "MESSAGE Can't open NULL device for reading or appending.", "VOLUME_UNLABELED", "VOLUME_ERROR"],
 	  "Fail with correct message for a null tapedev");
 
 ##
@@ -92,7 +93,7 @@ is_deeply([ sort split "\n", $Installcheck::Run::stdout],
 ok(run('amdevcheck', 'TESTCONF', 'null:null'),
     "can override device on the command line");
 is_deeply([ sort split "\n", $Installcheck::Run::stdout],
-	  [ sort "MESSAGE Can't open NULL device for reading or appending.", "DEVICE_ERROR"],
+	  [ sort "MESSAGE Can't open NULL device for reading or appending.", "VOLUME_UNLABELED", "VOLUME_ERROR"],
     ".. and produce a corresponding error message");
 
 Installcheck::Dumpcache::load("basic");

@@ -1,10 +1,11 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
- * Copyright (c) 2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -88,7 +89,14 @@ pull_buffer_impl(
     }
 
     do {
-	buf = g_malloc(self->block_size);
+	buf = g_try_malloc(self->block_size);
+	if (buf == NULL) {
+	    xfer_cancel_with_error(elt,
+		_("%s: cannot allocate memory"),
+		self->device->device_name);
+	    wait_until_xfer_cancelled(elt->xfer);
+	    return NULL;
+	}
 	devsize = (int)self->block_size;
 	result = device_read_block(self->device, buf, &devsize);
 	*size = devsize;

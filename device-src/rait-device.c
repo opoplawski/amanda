@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -1095,7 +1096,7 @@ static DeviceStatusFlags rait_device_read_label(Device * dself) {
     for (i = 0; i < ops->len; i ++) {
         GenericOp * op = g_ptr_array_index(ops, i);
         DeviceStatusFlags result = GPOINTER_TO_INT(op->result);
-        if (op->result == DEVICE_STATUS_SUCCESS) {
+        if (result == DEVICE_STATUS_SUCCESS) {
             if (first_success == NULL) {
                 /* This is the first successful device. */
                 first_success = op->child;
@@ -1222,7 +1223,9 @@ rait_device_start (Device * dself, DeviceAccessMode mode, char * label,
 	return FALSE;
 
     dself->access_mode = mode;
+    g_mutex_lock(dself->device_mutex);
     dself->in_file = FALSE;
+    g_mutex_unlock(dself->device_mutex);
     amfree(dself->volume_label);
     amfree(dself->volume_time);
     dumpfile_free(dself->volume_header);
@@ -1404,9 +1407,12 @@ rait_device_start_file (Device * dself, dumpfile_t * info) {
         return FALSE;
     }
 
-    dself->in_file = TRUE;
     g_assert(actual_file >= 1);
     dself->file = actual_file;
+    g_mutex_lock(dself->device_mutex);
+    dself->in_file = TRUE;
+    dself->bytes_written = 0;
+    g_mutex_unlock(dself->device_mutex);
 
     return TRUE;
 }
@@ -1584,6 +1590,9 @@ rait_device_write_block (Device * dself, guint size, gpointer data) {
         return FALSE;
     } else {
         dself->block ++;
+	g_mutex_lock(dself->device_mutex);
+	dself->bytes_written += size;
+	g_mutex_unlock(dself->device_mutex);
 
         return TRUE;
     }
@@ -1607,6 +1616,9 @@ rait_device_finish_file (Device * dself) {
     RaitDevice * self = RAIT_DEVICE(dself);
 
     g_assert(self != NULL);
+    if (!dself->in_file)
+	return TRUE;
+
     if (rait_device_in_error(dself)) return FALSE;
     if (self->private->status != RAIT_STATUS_COMPLETE) return FALSE;
 
@@ -1626,7 +1638,9 @@ rait_device_finish_file (Device * dself) {
         return FALSE;
     }
 
+    g_mutex_lock(dself->device_mutex);
     dself->in_file = FALSE;
+    g_mutex_unlock(dself->device_mutex);
     return TRUE;
 }
 
@@ -1655,9 +1669,12 @@ rait_device_seek_file (Device * dself, guint file) {
 
     if (rait_device_in_error(self)) return NULL;
 
-    dself->in_file = FALSE;
     dself->is_eof = FALSE;
     dself->block = 0;
+    g_mutex_lock(dself->device_mutex);
+    dself->in_file = FALSE;
+    dself->bytes_read = 0;
+    g_mutex_unlock(dself->device_mutex);
 
     ops = g_ptr_array_sized_new(self->private->children->len);
     for (i = 0; i < self->private->children->len; i ++) {
@@ -1722,7 +1739,9 @@ rait_device_seek_file (Device * dself, guint file) {
     }
 
     /* update our state */
+    g_mutex_lock(dself->device_mutex);
     dself->in_file = in_file;
+    g_mutex_unlock(dself->device_mutex);
     dself->file = actual_file;
 
     return rval;
@@ -1990,7 +2009,9 @@ rait_device_read_block (Device * dself, gpointer buf, int * size) {
 		stralloc(_("EOF")),
 		DEVICE_STATUS_SUCCESS);
             dself->is_eof = TRUE;
+	    g_mutex_lock(dself->device_mutex);
 	    dself->in_file = FALSE;
+	    g_mutex_unlock(dself->device_mutex);
         } else {
 	    device_set_error(dself,
 		stralloc(_("All child devices failed to read, but not all are at eof")),
@@ -2007,6 +2028,9 @@ rait_device_read_block (Device * dself, gpointer buf, int * size) {
     if (success) {
 	dself->block++;
 	*size = blocksize;
+	g_mutex_lock(dself->device_mutex);
+	dself->bytes_read += blocksize;
+	g_mutex_unlock(dself->device_mutex);
         return blocksize;
     } else {
         return -1;

@@ -1,9 +1,10 @@
 # vim:ft=perl
-# Copyright (c) 2008,2009 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -61,6 +62,7 @@ sub new {
 	$execute_where = "client";
     }
     Amanda::Util::setup_application($name, $execute_where, $CONTEXT_DAEMON);
+    debug("Arguments: " . join(' ', @ARGV));
 
     #initialize config client to get values from amanda-client.conf
     config_init($CONFIG_INIT_CLIENT, undef);
@@ -99,6 +101,8 @@ sub new {
 sub print_to_server {
     my $self = shift;
     my($msg, $status) = @_;
+    Amanda::Debug::debug($msg);
+
     if ($status != 0) {
         $self->{error_status} = $status;
     }
@@ -120,7 +124,7 @@ sub print_to_server {
 	} elsif ($status == $Amanda::Script_App::ERROR) {
             print {$self->{mesgout}} "? $msg\n";
 	} else {
-            print {$self->{mesgout}} "sendbackup: error $msg\n";
+            print {$self->{mesgout}} "sendbackup: error [$msg]\n";
 	}
     } elsif ($self->{action} eq "restore") {
         print STDERR "$msg\n";
@@ -135,8 +139,11 @@ sub print_to_server {
 #$_[1] status: GOOD or ERROR
 sub print_to_server_and_die {
     my $self = shift;
+    my($msg, $status) = @_;
 
-    $self->print_to_server( @_ );
+    $status = $Amanda::Script_App::FAILURE;
+
+    $self->print_to_server($msg, $status);
     if (!defined $self->{die} && $self->can("check_for_backup_failure")) {
 	$self->{die} = 1;
 	$self->check_for_backup_failure();
@@ -181,6 +188,8 @@ sub do {
 	$self->{action} = 'restore';
     } elsif ($action eq 'validate') {
 	$self->{action} = 'validate';
+    } else {
+	$self->{action} = $action;
     }
 
     if ($action eq 'backup') {
@@ -204,6 +213,9 @@ sub do {
 
     # it exists -- call it
     $self->$function_name();
+
+    Amanda::Util::finish_application();
+    exit($self->{'error_status'});
 }
 
 1;

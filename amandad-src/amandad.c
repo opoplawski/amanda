@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -151,7 +152,7 @@ struct active_service {
  */
 GSList *serviceq = NULL;
 
-static int wait_30s = 1;
+static event_handle_t *exit_event;
 static int exit_on_qlength = 1;
 static char *auth = NULL;
 static kencrypt_type amandad_kencrypt = KENCRYPT_NONE;
@@ -213,6 +214,7 @@ main(
 
     safe_fd(-1, 0);
     safe_cd();
+    make_crc_table();
 
     /*
      * Nexenta needs the SUN_PERSONALITY env variable to be unset, otherwise
@@ -258,9 +260,9 @@ main(
     if (geteuid() == 0) {
 	check_running_as(RUNNING_AS_ROOT);
 	initgroups(CLIENT_LOGIN, get_client_gid());
-	setgid(get_client_gid());
-	setegid(get_client_gid());
-	seteuid(get_client_uid());
+	if(setgid(get_client_gid()) != 0) { error("Can't set gid"); };
+	if(setegid(get_client_gid()) != 0) { error("Can't set egid"); };
+	if(seteuid(get_client_uid()) != 0) { error("Can't set euid"); };
     } else {
 	check_running_as(RUNNING_AS_CLIENT_LOGIN);
     }
@@ -451,12 +453,11 @@ main(
        strcasecmp(auth, "ssh") == 0 ||
        strcasecmp(auth, "local") == 0 ||
        strcasecmp(auth, "bsdtcp") == 0) {
-	wait_30s = 0;
 	exit_on_qlength = 1;
     }
 
 #ifndef SINGLE_USERID
-    if (geteuid() == 0) {
+    if (getuid() == 0) {
 	if (strcasecmp(auth, "krb5") != 0) {
 	    struct passwd *pwd;
 	    /* lookup our local user name */
@@ -491,7 +492,7 @@ main(
 
     /* krb5 require the euid to be 0 */
     if (strcasecmp(auth, "krb5") == 0) {
-	seteuid((uid_t)0);
+	if(seteuid((uid_t)0) != 0) { error("Can't set euid to 0"); };
     }
 
     /*
@@ -504,8 +505,7 @@ main(
      * Schedule an event that will try to exit every 30 seconds if there
      * are no requests outstanding.
      */
-    if(wait_30s)
-	(void)event_register((event_id_t)30, EV_TIME, exit_check, &no_exit);
+    exit_event = event_register((event_id_t)30, EV_TIME, exit_check, &no_exit);
 
     /*
      * Call event_loop() with an arg of 0, telling it to block until all
@@ -544,6 +544,7 @@ exit_check(
     if (no_exit)
 	return;
 
+    g_debug("timeout exit");
     dbclose();
     exit(0);
 }
@@ -564,13 +565,19 @@ protocol_accept(
     char *service_path = NULL;
     GSList *errlist = NULL;
     int i;
+    char *peer_name;
 
     pkt_out.body = NULL;
 
     /*
      * If handle is NULL, then the connection is closed.
      */
-    if(handle == NULL) {
+    if (handle == NULL) {
+	if (exit_on_qlength && exit_event) {
+	    /* remove the timeout, we will exit once the service terminate */
+	    event_release(exit_event);
+	    exit_event = NULL;
+	}
 	return;
     }
 
@@ -600,7 +607,9 @@ protocol_accept(
 	return;
     }
 
-    g_debug("authenticated peer name is '%s'", security_get_authenticated_peer_name(handle));
+    peer_name = security_get_authenticated_peer_name(handle);
+    g_debug("authenticated peer name is '%s'", peer_name);
+    amfree(peer_name);
 
     /*
      * If pkt is NULL, then there was a problem with the new connection.
@@ -1478,9 +1487,7 @@ process_writenetfd(
 	dbprintf(_("process_writenetfd: dh->fd_write <= 0\n"));
     } else if (size > 0) {
 	full_write(dh->fd_write, buf, (size_t)size);
-	security_stream_read(dh->netfd, process_writenetfd, dh);
-    }
-    else {
+    } else {
 	aclose(dh->fd_write);
     }
 }
@@ -1831,17 +1838,19 @@ service_delete(
      * bother to waitpid for it */
     assert(as->pid > 0);
     pid = waitpid(as->pid, NULL, WNOHANG);
-    if (pid != as->pid && kill(as->pid, SIGTERM) == 0) {
+    if (pid == 0 && kill(as->pid, SIGTERM) == 0) {
 	pid = waitpid(as->pid, NULL, WNOHANG);
 	count = 5;
-	while (pid != as->pid && count > 0) {
+	while (pid == 0 && count > 0) {
 	    count--;
 	    sleep(1);
 	    pid = waitpid(as->pid, NULL, WNOHANG);
 	}
-	if (pid != as->pid) {
+	if (pid == 0) {
 	    g_debug("Process %d failed to exit", (int)as->pid);
 	}
+    } else {
+	g_debug("Waitpid for process %d failed: %s", (int)as->pid, strerror(errno));
     }
 
     serviceq = g_slist_remove(serviceq, (gpointer)as);

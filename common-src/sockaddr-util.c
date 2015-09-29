@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -113,6 +114,58 @@ str_sockaddr_no_port(
     mystr_sockaddr[sizeof(mystr_sockaddr)-1] = '\0';
 
     return mystr_sockaddr;
+}
+
+char *
+str_sockaddr_r(
+    sockaddr_union *sa,
+    char *strsockaddr,
+    socklen_t size)
+{
+#ifdef WORKING_IPV6
+    char ipstr[INET6_ADDRSTRLEN];
+#else
+    char ipstr[INET_ADDRSTRLEN];
+#endif
+    int port;
+
+    port = SU_GET_PORT(sa);
+#ifdef WORKING_IPV6
+    if ( SU_GET_FAMILY(sa) == AF_INET6) {
+	inet_ntop(AF_INET6, &sa->sin6.sin6_addr, ipstr, sizeof(ipstr));
+    } else
+#endif
+    {
+	inet_ntop(AF_INET, &sa->sin.sin_addr.s_addr, ipstr, sizeof(ipstr));
+    }
+    g_snprintf(strsockaddr, size, "%s:%d", ipstr, port);
+
+    return strsockaddr;
+}
+
+char *
+str_sockaddr_no_port_r(
+    sockaddr_union *sa,
+    char *strsockaddr,
+    socklen_t size)
+{
+#ifdef WORKING_IPV6
+    char ipstr[INET6_ADDRSTRLEN];
+#else
+    char ipstr[INET_ADDRSTRLEN];
+#endif
+
+#ifdef WORKING_IPV6
+    if ( SU_GET_FAMILY(sa) == AF_INET6) {
+	inet_ntop(AF_INET6, &sa->sin6.sin6_addr, ipstr, sizeof(ipstr));
+    } else
+#endif
+    {
+	inet_ntop(AF_INET, &sa->sin.sin_addr.s_addr, ipstr, sizeof(ipstr));
+    }
+    g_snprintf(strsockaddr, size, "%s", ipstr);
+
+    return strsockaddr;
 }
 
 int

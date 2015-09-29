@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -40,6 +41,13 @@
 int stream_server(int family, in_port_t *port, size_t sendsize,
 		  size_t recvsize, int priv);
 int stream_accept(int sock, int timeout, size_t sendsize, size_t recvsize);
+int stream_client_addr(struct addrinfo *res,
+		       in_port_t port,
+		       size_t sendsize,
+		       size_t recvsize,
+		       in_port_t *localport,
+		       int nonblock,
+		       int priv);
 int stream_client_privileged(const char *hostname,
 				in_port_t port,
 				size_t sendsize,

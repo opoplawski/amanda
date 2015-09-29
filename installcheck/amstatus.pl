@@ -1,8 +1,9 @@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -16,7 +17,7 @@
 # Contact information: Zmanda Inc, 465 S. Mathilda Ave., Suite 300
 # Sunnyvale, CA 94086, USA, or: http://www.zmanda.com
 
-use Test::More tests => 10;
+use Test::More tests => 12;
 use strict;
 use warnings;
 
@@ -73,5 +74,16 @@ ok(!run('amstatus', 'TESTCONF'),
 is($Installcheck::Run::exit_code, 4,
     "correct exit code for chunker partial");
 like($Installcheck::Run::stdout,
-    qr{localhost:/etc 0 backup failed: dumper: \[/usr/sbin/tar returned error\] \(7:49:23\)},
+    qr{localhost:/etc 0\s*80917k dump failed: dumper: \[/usr/sbin/tar returned error\], finished \(7:49:53\)},
+    "output is correct");
+
+## now test a taper-parallel-write > 1
+
+$cat = Installcheck::Catalogs::load('taper-parallel-write');
+$cat->install();
+
+ok(run('amstatus', 'TESTCONF'),
+    "amstatus with taper-parallel-write runs without error");
+like($Installcheck::Run::stdout,
+    qr{\s*tape 3\s*:\s*1\s*142336k\s*142336k \(  5.82\%\) amstatus_test_3-AA-003 \(1 chunks\)},
     "output is correct");

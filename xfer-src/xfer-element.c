@@ -1,10 +1,11 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
- * Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -41,6 +42,7 @@ xfer_element_init(
     xe->upstream = xe->downstream = NULL;
     xe->_input_fd = xe->_output_fd = -1;
     xe->repr = NULL;
+    xe->must_drain = FALSE;
 }
 
 static gboolean
@@ -238,11 +240,15 @@ xfer_element_pull_buffer(
     XferElement *elt,
     size_t *size)
 {
+    xfer_status status;
     /* Make sure that the xfer is running before calling upstream's
      * pull_buffer method; this avoids a race condition where upstream
      * hasn't finished its xfer_element_start yet, and isn't ready for
      * a pull */
-    if (elt->xfer->status == XFER_START)
+    g_mutex_lock(elt->xfer->status_mutex);
+    status = elt->xfer->status;
+    g_mutex_unlock(elt->xfer->status_mutex);
+    if (status == XFER_START)
 	wait_until_xfer_running(elt->xfer);
 
     return XFER_ELEMENT_GET_CLASS(elt)->pull_buffer(elt, size);

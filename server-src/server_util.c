@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -41,16 +42,16 @@
 #include "sys/wait.h"
 
 const char *cmdstr[] = {
-    "BOGUS", "QUIT", "QUITTING", "DONE", "PARTIAL", 
+    "BOGUS", "QUIT", "QUITTING", "DONE", "PARTIAL",
     "START", "FILE-DUMP", "PORT-DUMP", "CONTINUE", "ABORT",/* dumper cmds */
     "FAILED", "TRY-AGAIN", "NO-ROOM", "RQ-MORE-DISK",	/* dumper results */
     "ABORT-FINISHED", "BAD-COMMAND",			/* dumper results */
     "START-TAPER", "FILE-WRITE", "NEW-TAPE", "NO-NEW-TAPE",
-     
+
     "PARTDONE", "PORT-WRITE", "DUMPER-STATUS",		    /* taper cmds */
     "PORT", "TAPE-ERROR", "TAPER-OK",			 /* taper results */
     "REQUEST-NEW-TAPE", "DIRECTTCP-PORT", "TAKE-SCRIBE-FROM",
-    "START-SCAN", "CLOSE-VOLUME", "LAST_TOK",
+    "START-SCAN", "CLOSE-VOLUME", "READY", "LAST_TOK",
     NULL
 };
 
@@ -567,7 +568,7 @@ internal_server_estimate(
 
 	for (j=NB_HISTORY-2; j>=0; j--) {
 	    if (info->history[j].level == 0) {
-		if (info->history[j].size < (gint64)0) continue;
+		if (info->history[j].size <= (gint64)0) continue;
 		est_size = info->history[j].size;
 		nb_est++;
 	    }
@@ -600,7 +601,7 @@ internal_server_estimate(
 
 	for (j=NB_HISTORY-2; j>=0; j--) {
 	    if (info->history[j].level <= 0) continue;
-	    if (info->history[j].size < (gint64)0) continue;
+	    if (info->history[j].size <= (gint64)0) continue;
 	    if (info->history[j].level == info->history[j+1].level) {
 		if (nb_day <NB_DAY-1) nb_day++;
 		est_size_day[nb_day] += info->history[j].size;
@@ -646,7 +647,7 @@ internal_server_estimate(
 
 	for (j=NB_HISTORY-2; j>=0; j--) {
 	    if (info->history[j].level <= 0) continue;
-	    if (info->history[j].size < (gint64)0) continue;
+	    if (info->history[j].size <= (gint64)0) continue;
 	    if (info->history[j].level == info->history[j+1].level + 1 ) {
 		est_size += info->history[j].size;
 		nb_est++;

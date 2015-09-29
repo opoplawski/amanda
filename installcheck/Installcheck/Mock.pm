@@ -1,9 +1,10 @@
 # vim:ft=perl
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -182,6 +183,8 @@ sub config {
 	tpchanger => "\"chg-ndmp:127.0.0.1:$port\@$chg\"",
 	property => "\"tape-device\" \"0=ndmp:127.0.0.1:$port\@$drive0\"",
 	property => "append \"tape-device\" \"1=ndmp:127.0.0.1:$port\@$drive1\"",
+	device_property => "\"indirect\" \"FALSE\"",
+	device_property => "\"verbose\" \"YES\"",
 	changerfile => "\"$chg-state\"",
     ]);
 }

@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -173,10 +174,8 @@ sub {
 		    push @slots, $begin;
 		    $begin++;
 		}
-	    } elsif ($what1 =~ /^\d+$/) {
-		push @slots, $what1;
 	    } else {
-		print STDERR "Invalid slot range: $what1\n";
+		push @slots, $what1;
 	    }
 	}
     }
@@ -221,6 +220,13 @@ sub {
 		return;
 	    } elsif ($err->volinuse and defined $err->{'slot'}) {
 		$last_slot = $err->{'slot'};
+	        print STDERR sprintf("slot %3s: in use\n", $last_slot);
+	    } elsif ($err->empty and defined $err->{'slot'}) {
+		$last_slot = $err->{'slot'};
+	        print STDERR sprintf("slot %3s: empty\n", $last_slot);
+	    } elsif ($err->invalid and defined $err->{'slot'}) {
+		$last_slot = $err->{'slot'};
+	        print STDERR sprintf("slot %3s: %s\n", $last_slot, "$err");
 	    } else {
 		return failure($err, $finished_cb) if $err;
 	    }
@@ -242,8 +248,6 @@ sub {
 	    } else {
 		print STDERR sprintf("slot %3s: %s\n", $last_slot, $dev->error_or_status());
 	    }
-	} else {
-	    print STDERR sprintf("slot %3s: in use\n", $last_slot);
 	}
 
 	if ($res) {
@@ -301,16 +305,19 @@ sub {
 
 	for my $sl (@$inv) {
 	    my $line = "slot $sl->{slot}:";
-	    if (!defined($sl->{device_status}) && !defined($sl->{label})) {
-		$line .= " unknown state";
-	    } elsif ($sl->{'state'} == Amanda::Changer::SLOT_EMPTY) {
+	    my $tle;
+	    if ($sl->{'state'} == Amanda::Changer::SLOT_EMPTY) {
 		$line .= " empty";
+	    } elsif (!defined($sl->{device_status}) && !defined($sl->{label})) {
+		$line .= " unknown state";
 	    } else {
 		if (defined $sl->{label}) {
 		    $line .= " label $sl->{label}";
-		    my $tle = $tl->lookup_tapelabel($sl->{label});
-		    if ($tle->{'meta'}) {
-			$line .= " ($tle->{'meta'})";
+		    $tle = $tl->lookup_tapelabel($sl->{label});
+		    if (defined $tle) {
+			if ($tle->{'meta'}) {
+				$line .= " ($tle->{'meta'})";
+			}
 		    }
 		} elsif ($sl->{'device_status'} == $DEVICE_STATUS_VOLUME_UNLABELED) {
 		    $line .= " blank";
@@ -341,6 +348,13 @@ sub {
 	    if ($sl->{'current'}) {
 		$line .= " (current)";
 	    }
+	    if (defined $tle) {
+		if (defined $sl->{'barcode'} and
+		    defined $tle->{'barcode'} and
+		    $sl->{'barcode'} ne $tle->{'barcode'}) {
+		$line .= " MISTMATCH barcode in tapelist: $tle->{'barcode'}";
+		}
+	    }
 
 	    # note that inventory goes to stdout
 	    print "$line\n";
@@ -350,6 +364,40 @@ sub {
 	$finished_cb->();
     });
     $chg->inventory(inventory_cb => $inventory_cb);
+});
+
+subcommand("verify", "verify", "verify the changer is correctly configured",
+sub {
+    my ($finished_cb, @args) = @_;
+
+    my $chg = load_changer($finished_cb) or return;
+
+    if (@args != 0) {
+	return usage($finished_cb);
+    }
+
+    # TODO -- support an --xml option
+
+    my $verify_cb = make_cb(verify => sub {
+	my ($err, @results) = @_;
+	if ($err) {
+	    if ($err->notimpl) {
+		if ($err->{'message'}) {
+		    print STDERR "verify not supported by this changer: $err->{'message'}\n";
+		} else {
+		    print STDERR "verify not supported by this changer\n";
+		}
+	    } else {
+		print STDERR "$err\n";
+	    }
+	} else {
+	    print STDERR join("\n", @results);
+	    print STDERR "\n";
+	}
+	$chg->quit();
+	return $finished_cb->();
+    });
+    $chg->verify(finished_cb => $verify_cb);
 });
 
 subcommand("current", "current", "load and show the contents of the current slot",
@@ -528,7 +576,7 @@ sub {
 		    print STDERR "slot $params{'err'}->{'slot'}:";
 		}
 		print STDERR " $params{'err'}\n";
-	    } else { # res must be defined
+	    } elsif ($params{'res'}) {
 		my $res = $params{'res'};
 		my $dev = $res->{'device'};
 		if (exists($params{'search_result'})) {
@@ -541,7 +589,9 @@ sub {
 		    } elsif ($params{'does_not_match_labelstr'}) {
 			print STDERR " volume '$volume_label' does not match labelstr '$params{'labelstr'}'\n";
 		    } elsif ($params{'not_in_tapelist'}) {
-			print STDERR " volume '$volume_label' is not in the tapelist\n"
+			print STDERR " volume '$volume_label' is not in the tapelist\n";
+		    } elsif ($params{'relabeled'}) {
+			print STDERR " volume '$volume_label' from another config will be relabeled\n";
 		    } else {
 			print STDERR " volume '$volume_label'\n";
 		    }
@@ -552,7 +602,12 @@ sub {
 		} elsif ($dev->status & $DEVICE_STATUS_VOLUME_UNLABELED and
 			 $dev->volume_header and
 			 $dev->volume_header->{'type'} == $Amanda::Header::F_WEIRD) {
-		    print STDERR " contains a non-Amanda volume; check and relabel it with 'amlabel -f'\n";
+		    my $autolabel = getconf($CNF_AUTOLABEL);
+		    if ($autolabel->{'non_amanda'}) {
+			print STDERR " contains a non-Amanda volume\n";
+		    } else {
+			print STDERR " contains a non-Amanda volume; check and relabel it with 'amlabel -f'\n";
+		    }
 		} elsif ($dev->status & $DEVICE_STATUS_VOLUME_ERROR) {
 		    my $message = $dev->error_or_status();
 		    print STDERR " can't read label: $message\n";
@@ -593,10 +648,17 @@ sub {
 
 	my $modestr = ($mode == $ACCESS_APPEND)? "append" : "write";
 	my $slot = $res->{'this_slot'};
-	if (defined $res->{'device'} and defined $res->{'device'}->volume_label()) {
+	if (defined $res->{'device'} and defined $res->{'device'}->volume_label() and $res->{'device'}->volume_label() eq $label) {
 	    print STDERR "Will $modestr to volume '$label' in slot $slot.\n";
+	} elsif (defined $res->{'device'} and defined $res->{'device'}->volume_label()) {
+	    print STDERR "Will $modestr label '$label' to '" . $res->{'device'}->volume_label() . "' labelled volume in slot $slot.\n";
 	} else {
-	    print STDERR "Will $modestr label '$label' to new volume in slot $slot.\n";
+	    my $header = $res->{'device'}->volume_header();
+	    if ($header->{'type'} == $Amanda::Header::F_WEIRD) {
+		print STDERR "Will $modestr label '$label' to non-Amanda volume in slot $slot.\n";
+	    } else {
+		print STDERR "Will $modestr label '$label' to new volume in slot $slot.\n";
+	    }
 	}
 	$res->release(finished_cb => sub {
 	    my ($err) = @_;
@@ -629,10 +691,10 @@ sub {
 	},
 	finished_cb => sub {
 	    my ($err) = @_;
+	    $chg->quit();
 	    return failure($err, $finished_cb) if $err;
 
 	    print STDERR "update complete\n";
-	    $chg->quit();
 	    $finished_cb->();
 	});
 });
@@ -650,7 +712,11 @@ sub load_changer {
 
 sub failure {
     my ($msg, $finished_cb) = @_;
-    print STDERR "ERROR: $msg\n";
+    if ($msg->isa("Amanda::Changer::Error") and defined $msg->{'slot'}) {
+	print STDERR "ERROR: Slot: $msg->{'slot'}: $msg\n";
+    } else {
+	print STDERR "ERROR: $msg\n";
+    }
     $exit_status = 1;
     $finished_cb->();
 }
@@ -677,6 +743,7 @@ Amanda::Util::setup_application("amtape", "server", $CONTEXT_CMDLINE);
 
 my $config_overrides = new_config_overrides($#ARGV+1);
 
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw(bundling));
 GetOptions(
     'version' => \&Amanda::Util::version_opt,

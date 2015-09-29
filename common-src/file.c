@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1997-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -440,6 +441,16 @@ debug_agets(
     (void)lineno;	/* Quiet unused parameter warning if not debugging */
 
     while ((ch = fgetc(stream)) != EOF) {
+
+	if (ch == '#' && !escape && !inquote) {
+	    // consume to the end of line.
+	    ch = fgetc(stream);
+	    while (ch != EOF && ch != '\n') {
+		ch = fgetc(stream);
+	    }
+	    break;
+	}
+
 	if (ch == '\n') {
 	    if (!inquote) {
 		if (escape) {
@@ -456,7 +467,7 @@ debug_agets(
 	    escape = !escape;
 	} else {
 	    if (ch == '"') {
-		if (!escape) 
+		if (!escape)
 		    inquote = !inquote;
 	    }
 	    escape = 0;

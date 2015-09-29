@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -42,7 +43,8 @@ sub usage {
     print STDERR "$msg\n" if $msg;
     print STDERR <<EOF;
 Usage: amrestore [--config config] [-b blocksize] [-r|-c|-C] [-p] [-h]
-    [-f filenum] [-l label] [-o configoption]*
+    [-f filenum] [-l label] [--exact-match] [-o configoption]*
+    [--continue-on-filter-error]
     {device | [--holding] holdingfile}
     [hostname [diskname [datestamp [hostname [diskname [datestamp ... ]]]]]]"));
 EOF
@@ -57,13 +59,20 @@ Amanda::Util::setup_application("amrestore", "server", $CONTEXT_CMDLINE);
 my $config_overrides = new_config_overrides($#ARGV+1);
 
 my ($opt_config, $opt_blocksize, $opt_raw, $opt_compress, $opt_compress_best,
-    $opt_pipe, $opt_header, $opt_filenum, $opt_label, $opt_holding, $opt_restore_src);
+    $opt_pipe, $opt_header, $opt_filenum, $opt_label, $opt_holding,
+    $opt_restore_src, $opt_exact_match);
+
+my $opt_continue_on_filter_error = 0;
+
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw(bundling));
 GetOptions(
     'version' => \&Amanda::Util::version_opt,
     'help|usage|?' => \&usage,
     'config=s' => \$opt_config,
     'holding' => \$opt_holding,
+    'exact-match' => \$opt_exact_match,
+    'continue-on-filter-error' => \$opt_continue_on_filter_error,
     'b=i' => \$opt_blocksize,
     'r' => \$opt_raw,
     'c' => \$opt_compress,
@@ -85,8 +94,9 @@ if (!$opt_holding) {
 	if (Amanda::Holding::get_header($opt_restore_src));
 }
 
-my @opt_dumpspecs = Amanda::Cmdline::parse_dumpspecs([@ARGV],
-    $Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP);
+my $cmd_flags = $Amanda::Cmdline::CMDLINE_PARSE_DATESTAMP;
+$cmd_flags |= $Amanda::Cmdline::CMDLINE_EXACT_MATCH if $opt_exact_match;
+my @opt_dumpspecs = Amanda::Cmdline::parse_dumpspecs([@ARGV], $cmd_flags);
 
 usage("Cannot check a label on a holding-disk file")
     if ($opt_holding and $opt_label);
@@ -140,6 +150,7 @@ sub main {
     $filenum = 0 + "$filenum"; # convert to integer
     my %all_filter;
     my $restore_done;
+    my $restore_err;
 
     my $steps = define_steps
 	cb_ref => \$finished_cb,
@@ -171,6 +182,16 @@ sub main {
 	return failure($err, $finished_cb) if $err;
 
 	$dev = $res->{'device'};
+
+	if ($opt_blocksize) {
+	    if ( !$dev->property_set("BLOCK_SIZE", $opt_blocksize)) {
+		return failure($dev->error_or_status, $finished_cb);
+	    }
+
+	    # re-read the label with the correct blocksize
+	    $dev->read_label();
+	}
+
 	if ($dev->status != $DEVICE_STATUS_SUCCESS) {
 	    return failure($dev->error_or_status, $finished_cb);
 	}
@@ -205,6 +226,8 @@ sub main {
     };
 
     step read_header => sub {
+	$restore_done = 0;
+	$restore_err = undef;
 	if ($opt_holding) {
 	    print STDERR "Reading from '$opt_restore_src'\n";
 	    $hdr = Amanda::Holding::get_header($opt_restore_src);
@@ -289,11 +312,11 @@ sub main {
 	    if ($hdr->{'srv_encrypt'}) {
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $hdr->{'srv_encrypt'}, $hdr->{'srv_decrypt_opt'} ], 0);
+			[ $hdr->{'srv_encrypt'}, $hdr->{'srv_decrypt_opt'} ], 0, 0, 0, 1);
 	    } elsif ($hdr->{'clnt_encrypt'}) {
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $hdr->{'clnt_encrypt'}, $hdr->{'clnt_decrypt_opt'} ], 0);
+			[ $hdr->{'clnt_encrypt'}, $hdr->{'clnt_decrypt_opt'} ], 0, 0, 0, 1);
 	    } else {
 		return failure("could not decrypt encrypted dump: no program specified",
 			    $finished_cb);
@@ -313,17 +336,17 @@ sub main {
 		# TODO: this assumes that srvcompprog takes "-d" to decompress
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $hdr->{'srvcompprog'}, "-d" ], 0);
+			[ $hdr->{'srvcompprog'}, "-d" ], 0, 0, 0, 1);
 	    } elsif ($hdr->{'clntcompprog'}) {
 		# TODO: this assumes that clntcompprog takes "-d" to decompress
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
-			[ $hdr->{'clntcompprog'}, "-d" ], 0);
+			[ $hdr->{'clntcompprog'}, "-d" ], 0, 0, 0, 1);
 	    } else {
 		push @filters,
 		    Amanda::Xfer::Filter::Process->new(
 			[ $Amanda::Constants::UNCOMPRESS_PATH,
-			  $Amanda::Constants::UNCOMPRESS_OPT ], 0);
+			  $Amanda::Constants::UNCOMPRESS_OPT ], 0, 0, 0, 1);
 	    }
 	    
 	    # adjust the header
@@ -338,7 +361,7 @@ sub main {
 	    @filters = (
 		Amanda::Xfer::Filter::Process->new(
 		    [ $Amanda::Constants::COMPRESS_PATH,
-		      $compress_opt ], 0),
+		      $compress_opt ], 0, 0, 0, 1),
 	    );
 	    
 	    # adjust the header
@@ -373,7 +396,7 @@ sub main {
 		    $src->remove();
 		    POSIX::close($fd);
 		    if (!%all_filter and $restore_done) {
-			$finished_cb->();
+			$steps->{'xfer_filter_done'}->();
 		    }
 		} else {
 		    $buffer .= $b;
@@ -391,14 +414,21 @@ sub main {
 	my $xfer = Amanda::Xfer->new([ $src, @filters, $dest ]);
 	my $got_err = undef;
 	$xfer->get_source()->set_callback(sub {
-	    my ($src, $msg, $xfer) = @_;
+	    my ($msg_src, $msg, $xfer) = @_;
 
 	    if ($msg->{'type'} == $XMSG_INFO) {
 		Amanda::Debug::info($msg->{'message'});
 	    } elsif ($msg->{'type'} == $XMSG_ERROR) {
-		$got_err = $msg->{'message'};
+		if ((defined $src && $msg->{'elt'} == $src) ||
+		    (defined $dest && $msg->{'elt'} == $dest)) {
+		    $got_err = $msg->{'message'};
+		} elsif (!$opt_continue_on_filter_error) {
+		    $got_err = $msg->{'message'};
+		} else {
+		    print STDERR "ERROR: $msg->{'message'}\n";
+		}
 	    } elsif ($msg->{'type'} == $XMSG_DONE) {
-		$src->remove();
+		$msg_src->remove();
 		$steps->{'xfer_done'}->($got_err);
 	    }
 	});
@@ -407,7 +437,15 @@ sub main {
 
     step xfer_done => sub {
 	my ($err) = @_;
-	return failure($err, $finished_cb) if $err;
+	$restore_err = $err;
+	$restore_done = 1;
+	return if %all_filter;
+
+	$steps->{'xfer_filter_done'}->();
+     };
+
+    step xfer_filter_done => sub {
+	return failure($restore_err, $finished_cb) if $restore_err;
 
 	$steps->{'next_file'}->('extracted');
     };
@@ -435,12 +473,9 @@ sub main {
     step quit => sub {
 	my ($err) = @_;
 	$res = undef;
-	$restore_done = 1;
 	return failure($err, $finished_cb) if $err;
 
-	if (!%all_filter) {
-	    $finished_cb->();
-	}
+	$finished_cb->();
     };
 }
 main(\&Amanda::MainLoop::quit);

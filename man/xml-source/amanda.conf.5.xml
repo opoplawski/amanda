@@ -350,6 +350,37 @@ Specify which types of messages will trigger an email from amreport. amreport is
   </varlistentry>
 
   <varlistentry>
+  <term><amkeyword>report-use-media</amkeyword> <amtype>boolean</amtype></term>
+  <listitem>
+<para>Default:
+<amdefault>True</amdefault> if <amkeyword>max-dle-by-volume</amkeyword>
+is not set,
+<amdefault>False</amdefault> if it is set.
+If the reporter must print the list of media used in the run.</para>
+  </listitem>
+  </varlistentry>
+
+  <varlistentry>
+  <term><amkeyword>report-next-media</amkeyword> <amtype>boolean</amtype></term>
+  <listitem>
+<para>Default:
+<amdefault>True</amdefault> if <amkeyword>max-dle-by-volume</amkeyword>
+is not set,
+<amdefault>False</amdefault> if it is set.
+If the reporter must print the list of media expected for the next run.</para>
+  </listitem>
+  </varlistentry>
+
+  <varlistentry>
+  <term><amkeyword>report-format</amkeyword> <amtype>string</amtype>+</term>
+  <listitem>
+<para>Default:
+<amdefault>Not set</amdefault>. The formats amdump, amflush and amvault use
+when invoking amreport.</para>
+  </listitem>
+  </varlistentry>
+
+  <varlistentry>
   <term><amkeyword>max-dle-by-volume</amkeyword> <amtype>int</amtype></term>
   <listitem>
 <para>Default:
@@ -755,7 +786,7 @@ time. The changer must have as many drives.</para>
 </varlistentry>
 
 <varlistentry>
-  <term><amkeyword>eject-volume</amkeyword> <amtype>int</amtype></term>
+  <term><amkeyword>eject-volume</amkeyword> <amtype>bool</amtype></term>
   <listitem>
     <para>Default: <amdefault>no</amdefault>.
 Set to <amkeyword>yes</amkeyword> if you want the volume to be ejected
@@ -860,7 +891,7 @@ How many times the server will resend a REQ packet if it doesn't get the ACK pac
   <term><amkeyword>netusage</amkeyword> <amtype>int</amtype></term>
   <listitem>
 <para>Default:
-<amdefault>8000 Kbps</amdefault>.
+<amdefault>80000 Kbps</amdefault>.
 The maximum network bandwidth allocated to Amanda, in Kbytes per second.
 See also the
 <emphasis remap='B'>interface</emphasis>
@@ -1159,7 +1190,7 @@ is the same as the <amkeyword>amrecover-changer</amkeyword> setting.</para>
   <varlistentry>
   <term><amkeyword>columnspec</amkeyword> <amtype>string</amtype></term>
   <listitem>
-<para> default: "HostName=0:12:12,Disk=1:11:11,Level=1:1:1,OrigKB=1:-7:0,OutKB=1:-7:0,Compress=1:-6:1,DumpTime=1:-7:7,Dumprate=1:-6:1,TapeTime=1:-6:6,TapeRate=1:-6:1"</para>
+<para> default: "HostName=0:-12:12,Disk=1:-11:11,Level=1:-1:1,OrigKB=1:-7:0,OutKB=1:-7:0,Compress=1:-6:1,DumpTime=1:-7:7,Dumprate=1:-6:1,TapeTime=1:-6:6,TapeRate=1:-6:1"</para>
 <para>Defines the width of columns <emphasis remap='B'>amreport</emphasis>
 should use.
 <emphasis remap='I'>String</emphasis>
@@ -1328,7 +1359,8 @@ Debug level of all recovery process</para>
 <para>Default: <amdefault>0</amdefault>.
   Amanda will not begin writing data to a new volume until the amount of
   data on the holding disk is at least this percentage of the volume
-  size. In other words, Amanda will not begin until the
+  size and the criterion for flush-threshold-scheduled is also
+  met. In other words, Amanda will not begin until the
   amount of data on the holding disk is greater than the tape
   length times this parameter.
   This parameter may be larger than 100%, for example to keep
@@ -1353,7 +1385,8 @@ Debug level of all recovery process</para>
   Amanda will not begin writing data to a new volume until the sum of the
   amount of data on the holding disk and the estimated amount of data
   remaining to be dumped during this run is at least this percentage
-  of the volume size. In other words, Amanda will not begin until the
+  of the volume size and the criterion for flush-threshold-dumped is also
+  met. In other words, Amanda will not begin until the
   inequality <inlineequation><mathphrase>h + s &gt; t &#215;
   d</mathphrase></inlineequation> is satisfied,
   where <mathphrase>h</mathphrase> is the amount of data on the
@@ -1465,6 +1498,13 @@ Range is inclusive.</para>
   </listitem>
   </varlistentry>
 
+  <varlistentry>
+  <term><amkeyword>tmpdir</amkeyword> <amtype>string</amtype></term>
+  <listitem>
+<para>Default: none (system default).  Set it to a directory with lots of free
+space if sort in amindexd fail with 'No space left on device'.</para>
+  </listitem>
+  </varlistentry>
 </variablelist>
 </refsect1>
 
@@ -2117,6 +2157,17 @@ promotion, set it to 1 or 2 if your disks get overpromoted.</para>
   </listitem>
   </varlistentry>
   <varlistentry>
+  <term><amkeyword>max-warnings</amkeyword> <amtype>int</amtype></term>
+  <listitem>
+<para>Default:
+<amdefault>20</amdefault>.
+The maximum number of error lines in the report for a dle. A value of '0'
+means unlimited. This is useful to reduce the size of the log file and the
+size of the report. All errors are put in separate files if a dle have more
+errors.</para>
+  </listitem>
+  </varlistentry>
+  <varlistentry>
   <term><amkeyword>priority</amkeyword> [ <amkeyword>low</amkeyword> | <amkeyword>medium</amkeyword> | <amkeyword>high</amkeyword> ]</term>
   <listitem>
 <para>Default: <amkeyword>medium</amkeyword>.
@@ -2488,13 +2539,10 @@ tape devices.
   <varlistentry>
   <term><amkeyword>part-size</amkeyword> <amtype>int</amtype></term>
   <listitem>
-<para>Default: none.  This is the size (in KB if no units are specified) of
-each split part written to the volume.  It is reduced to
-<amkeyword>part-cache-max-size</amkeyword> when part caching is required.
-If this is set to zero, then no splitting will take place; in this case,
-some devices can span dumps from volume to volume, while others will cause
-the entire dump to fail if they encounter end-of-medium before the dump is
-complete.  See "Dump Splitting Configuration" below.</para>
+<para>If this is set to zero (default), then no splitting will take place,
+and the entire dump will fail, if end-of-medium is encountered before
+the dump is complete, unless the device property LEOM is true, and the
+device can detect EOM.  See "Dump Splitting Configuration" below.</para>
   </listitem>
   </varlistentry>
 
@@ -2627,7 +2675,7 @@ A comment string describing this set of network information.</para>
   <term><amkeyword>use</amkeyword> <amtype>int</amtype></term>
   <listitem>
 <para>Default:
-<amdefault>8000 Kbps</amdefault>.
+<amdefault>80000 Kbps</amdefault>.
 The speed of the interface in Kbytes per second.</para>
   </listitem>
   </varlistentry>
@@ -2949,7 +2997,7 @@ in the form of "device" sections, which look like this:</para>
 
 <programlisting>
 define device <emphasis remap='I'>name</emphasis> {
-    commend "<emphasis remap='I'>comment (optional)</emphasis>"
+    comment "<emphasis remap='I'>comment (optional)</emphasis>"
     tapedev "<emphasis remap='I'>device-specifier</emphasis>"
     device-property "<emphasis remap='I'>prop-name</emphasis>" "<emphasis remap='I'>prop-value</emphasis>"
     <literal>...</literal>
@@ -3081,7 +3129,7 @@ A comment string describing this taperscan.</para>
   <varlistentry>
   <term><amkeyword>plugin</amkeyword> <amtype>string</amtype></term>
   <listitem>
-<para>No default. Must be set to the name of the taperscan module.  See <man name="amanda-taperscan" vol="7" /> for a list of defined taperscan modules.</para>
+<para>No default. Must be set to the name of the taperscan module.  See <manref name="amanda-taperscan" vol="7" /> for a list of defined taperscan modules.</para>
   </listitem>
   </varlistentry>
   <varlistentry>
@@ -3108,7 +3156,7 @@ A comment string describing this taperscan.</para>
     <para>In order to support re-writing from the beginning of a failed part,
 	Amanda must have access to the contents of the part after it has been
 	partially written.  If the dump is being read from holding disk, then
-	the part contents are availble there.  Otherwise, the part must be
+	the part contents are available there.  Otherwise, the part must be
 	cached, and this can be done memory or on disk.  In either of the
 	latter cases, the cache must have enough space to hold an entire
 	part.</para>

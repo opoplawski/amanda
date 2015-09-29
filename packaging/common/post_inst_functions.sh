@@ -11,6 +11,7 @@
 # os: Linux, Mac, Solaris, etc...
 # SYSCONFDIR: location of system config files (ie, /etc)
 # LOGDIR: logging directory for amanda
+# encoder: either base64 or uuencode depending on the default for this platform
 
 #TODO: gnutar-lists dir for solaris??
 
@@ -18,16 +19,16 @@ add_service() {
     # Only needed on Solaris!
     entry="amanda       10080/tcp    # amanda backup services"
     # make sure amanda is in /etc/services
-    if [ -z "`grep 'amanda' /${SYSCONFDIR}/services |grep '10080/tcp'`" ] ; then
-        logger "Adding amanda entry to /${SYSCONFDIR}/services."
-        echo "${entry}" >> /${SYSCONFDIR}/services
+    if [ -z "`grep 'amanda' ${SYSCONFDIR}/services |grep '10080/tcp'`" ] ; then
+        logger "Adding amanda entry to ${SYSCONFDIR}/services."
+        echo "${entry}" >> ${SYSCONFDIR}/services
     fi
 
     # make sure kamanda is in /etc/services
     entry_2="amanda       10081/tcp    famdc    # amanda backup services (kerberos)"
     if [ -z "`grep 'kamanda' /etc/services |grep '10081/tcp'`" ] ; then
-        logger "Adding kamanda entry to /${SYSCONFDIR}/services."
-        echo "${entry_2}" >> /${SYSCONFDIR}/services
+        logger "Adding kamanda entry to ${SYSCONFDIR}/services."
+        echo "${entry_2}" >> ${SYSCONFDIR}/services
     fi
 }
 
@@ -59,12 +60,111 @@ create_gnupg() {
 	fi
 }
 
+get_random_lines() {
+    # Print $1 lines of random strings to stdout.
+
+    [ "$1" ] && [ $1 -gt 0 ] || \
+        { logger "Error: '$1' not valid number of lines" ; return 1 ; }
+    lines=$1
+    [ -f "${encoder}" ] || \
+        { logger "Warning: Encoder '${encoder}' was not found.  Random passwords cannot be generated." ; return 1; }
+    case ${encoder} in
+        # "foo" is a required parameter that we throw away.
+        *uuencode*) enc_cmd="${encoder} foo" ;;
+        *base64*)   enc_cmd="${encoder}" ;;
+    esac
+    # Uuencode leaves a header (and footer) line, but base64 does not.
+    # So we pad output with an extra line, and strip any trailing lines over
+    # $lines
+    pad_lines=`expr $lines + 1`
+    # Increasing bs= is substantially faster than increasing count=.
+    # The number of bytes needed to start line wrapping is implementation
+    # specific.  base64. 60b > 1 base64 encoded line for all versions tested.
+    block_size=`expr $pad_lines \* 60`
+    # Head -c is not portable.
+    dd bs=${block_size} count=1 if=/dev/urandom 2>/dev/null | \
+            ${enc_cmd} | \
+            head -$pad_lines | \
+            tail -$lines || \
+        { logger "Warning: Error generating random passphrase."; return 1; }
+}
+
+create_ampassphrase() {
+    # install am_passphrase file to server
+    logger "Checking '${AMANDAHOMEDIR}/.am_passphrase' file."
+    if [ ! -f ${AMANDAHOMEDIR}/.am_passphrase ] ; then
+        # Separate file creation from password creation to ease debugging.
+        logger "Creating '${AMANDAHOMEDIR}/.am_passphrase' file."
+        log_output_of touch ${AMANDAHOMEDIR}/.am_passphrase || \
+            { logger "WARNING:  Could not create .am_passphrase." ; return 1; }
+        phrase=`get_random_lines 1` || return 1 # Error already logged
+        echo ${phrase} >>${AMANDAHOMEDIR}/.am_passphrase
+    else
+        logger "Info: ${AMANDAHOMEDIR}/.am_passphrase already exists."
+    fi
+    # Fix permissions for both new or existing installations.
+    log_output_of chown ${amanda_user}:${amanda_group} ${AMANDAHOMEDIR}/.am_passphrase || \
+        { logger "WARNING:  Could not chown .am_passphrase" ; return 1; }
+    log_output_of chmod 0600 ${AMANDAHOMEDIR}/.am_passphrase || \
+        { logger "WARNING:  Could not fix permissions on .am_passphrase" ; return 1; }
+}
+
+create_amkey() {
+    [ -f ${AMANDAHOMEDIR}/.am_passphrase ] || \
+        { logger "Error: ${AMANDAHOMEDIR}/.am_passphrase is missing, can't create amcrypt key."; return 1; }
+    logger "Creating encryption key for amcrypt"
+    if [ ! -f ${AMANDAHOMEDIR}/.gnupg/am_key.gpg ]; then
+        # TODO: don't write this stuff to disk!
+        get_random_lines 50 >${AMANDAHOMEDIR}/.gnupg/am_key || return 1
+        exec 3<${AMANDAHOMEDIR}/.am_passphrase
+        # setting homedir prevents some errors, but creates a permissions
+        # warning. perms are fixed in check_gnupg.
+        log_output_of gpg --homedir ${AMANDAHOMEDIR}/.gnupg \
+                --no-permission-warning \
+                --no-use-agent \
+                --armor \
+                --batch \
+                --symmetric \
+                --passphrase-fd 3 \
+                --output ${AMANDAHOMEDIR}/.gnupg/am_key.gpg \
+                ${AMANDAHOMEDIR}/.gnupg/am_key || \
+            { logger "WARNING: Error encrypting keys." ;
+              rm ${AMANDAHOMEDIR}/.gnupg/am_key;
+              return 1; }
+        # Be nice and clean up.
+        exec 3<&-
+    else
+        logger "Info: Encryption key '${AMANDAHOMEDIR}/.gnupg/am_key.gpg' already exists."
+    fi
+    # Always try to delete unencrypted keys
+    rm -f ${AMANDAHOMEDIR}/.gnupg/am_key
+}
+
 check_gnupg() {
-	logger "Ensuring correct permissions for '${AMANDAHOMEDIR}/.gnupg'."
-	log_output_of chown ${amanda_user}:${amanda_group} ${AMANDAHOMEDIR}/.gnupg || \
-		{ logger "WARNING:  Could not chown .gnupg dir." ; return 1; }
-	log_output_of chmod 700 ${AMANDAHOMEDIR}/.gnupg || \
-		{ logger "WARNING:  Could not set permissions on .gnupg dir." ; return 1; }
+    logger "Ensuring correct permissions for '${AMANDAHOMEDIR}/.gnupg'."
+    log_output_of chown -R ${amanda_user}:${amanda_group} ${AMANDAHOMEDIR}/.gnupg || \
+        { logger "WARNING:  Could not chown .gnupg dir." ; return 1; }
+    log_output_of chmod -R u=rwX,go= ${AMANDAHOMEDIR}/.gnupg || \
+        { logger "WARNING:  Could not set permissions on .gnupg dir." ; return 1; }
+    # If am_key.gpg and .am_passphrase already existed, we should check
+    # if they match!
+    if [ -f ${AMANDAHOMEDIR}/.gnupg/am_key.gpg ] && [ -f ${AMANDAHOMEDIR}/.am_passphrase ]; then
+        exec 3<${AMANDAHOMEDIR}/.am_passphrase
+        # Perms warning will persist because we are not running as ${amanda_user}
+        log_output_of gpg --homedir ${AMANDAHOMEDIR}/.gnupg \
+                --no-permission-warning \
+                --no-use-agent\
+                --batch \
+                --decrypt \
+                --passphrase-fd 3 \
+                --output /dev/null \
+                ${AMANDAHOMEDIR}/.gnupg/am_key.gpg || \
+            { logger "WARNING: .am_passphrase does not decrypt .gnupg/am_key.gpg.";
+                return 1;
+            }
+        # Be nice and clean up.
+        exec 3<&-
+    fi
 }
 
 create_amandahosts() {
@@ -196,25 +296,6 @@ install_client_conf() {
     else
         logger "Note: ${SYSCONFDIR}/amanda/amanda-client.conf exists. Please check ${AMANDAHOMEDIR}/example/amanda-client.conf for updates."
     fi
-}
-
-create_ampassphrase() {
-	# install am_passphrase file to server
-	logger "Checking '${AMANDAHOMEDIR}/.am_passphrase' file."
-	if [ ! -f ${AMANDAHOMEDIR}/.am_passphrase ] ; then
-		logger "Create '${AMANDAHOMEDIR}/.am_passphrase' file."
-		log_output_of touch ${AMANDAHOMEDIR}/.am_passphrase || \
-			{ logger "WARNING:  Could not create .am_passphrase." ; return 1; }
-		phrase=`echo $RANDOM | md5sum | awk '{print $1}'` || \
-			{ logger "WARNING:  Error creating pseudo random passphrase." ; return 1; }
-		echo ${phrase} >>${AMANDAHOMEDIR}/.am_passphrase
-
-		log_output_of chown ${amanda_user}:${amanda_group} ${AMANDAHOMEDIR}/.am_passphrase || \
-			{ logger "WARNING:  Could not chown .am_passphrase" ; return 1; }
-		log_output_of chmod 0600 ${AMANDAHOMEDIR}/.am_passphrase || \
-			{ logger "WARNING:  Could not fix permissions on .am_passphrase" ; return 1; }
-	fi
-
 }
 
 create_amtmp() {

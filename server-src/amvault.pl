@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -29,6 +30,15 @@ use vars qw( @ISA );
 
 sub new {
     my $class = shift;
+
+    if (!-r STDIN) {
+	return undef;
+    }
+    my $stdin;
+    if (!open $stdin, "<&STDIN") {
+     return undef;
+    }
+    close $stdin;
 
     my $self = {
 	input_src => undef};
@@ -93,7 +103,8 @@ sub user_request {
 package Amvault;
 
 use Amanda::Config qw( :getconf config_dir_relative );
-use Amanda::Debug qw( :logging );
+use Amanda::Disklist;
+use Amanda::Debug qw( :logging debug );
 use Amanda::Xfer qw( :constants );
 use Amanda::Header qw( :constants );
 use Amanda::MainLoop;
@@ -116,6 +127,8 @@ use base qw(
     Amanda::Taper::Scribe::Feedback
 );
 
+eval "require Time::HiRes qw / time /;";
+
 sub new {
     my $class = shift;
     my %params = @_;
@@ -123,12 +136,16 @@ sub new {
     bless {
 	quiet => $params{'quiet'},
 	fulls_only => $params{'fulls_only'},
+	latest_fulls => $params{'latest_fulls'},
+	incrs_only => $params{'incrs_only'},
 	opt_export => $params{'opt_export'},
+	opt_interactivity => $params{'opt_interactivity'},
 	opt_dumpspecs => $params{'opt_dumpspecs'},
 	opt_dry_run => $params{'opt_dry_run'},
 	config_name => $params{'config_name'},
 
 	src_write_timestamp => $params{'src_write_timestamp'},
+	src_labelstr => $params{'src_labelstr'},
 
 	dst_changer => $params{'dst_changer'},
 	dst_autolabel => $params{'dst_autolabel'},
@@ -141,6 +158,7 @@ sub new {
 	exporting => 0, # is an export in progress?
 	call_after_export => undef, # call this when export complete
 	config_overrides_opts => $params{'config_overrides_opts'},
+	trace_log_filename => getconf($CNF_LOGDIR) . "/log",
 
 	# called when the operation is complete, with the exit
 	# status
@@ -148,9 +166,58 @@ sub new {
     }, $class;
 }
 
+sub run_subprocess {
+    my ($proc, @args) = @_;
+
+    my $pid = POSIX::fork();
+    if ($pid == 0) {
+	my $null = POSIX::open("/dev/null", POSIX::O_RDWR);
+	POSIX::dup2($null, 0);
+	POSIX::dup2($null, 1);
+	POSIX::dup2($null, 2);
+	exec $proc, @args;
+	die "Could not exec $proc: $!";
+    }
+    waitpid($pid, 0);
+    my $s = $? >> 8;
+    debug("$proc exited with code $s: $!");
+}
+
+sub do_amcleanup {
+    my $self = shift;
+
+    return 1 unless -f $self->{'trace_log_filename'};
+
+    # logfiles are still around.  First, try an amcleanup -p to see if
+    # the actual processes are already dead
+    debug("runing amcleanup -p");
+    run_subprocess("$sbindir/amcleanup", '-p', $self->{'config_name'},
+		   $self->{'config_overrides_opts'});
+
+    return 1 unless -f $self->{'trace_log_filename'};
+
+    return 0;
+}
+
+sub bail_already_running() {
+    my $self = shift;
+    my $msg = "An Amanda process is already running - please run amcleanup if you wish to abort the current process and clean up open log files";
+    print "$msg\n";
+    debug($msg);
+    $self->{'exit_cb'}->(1);
+}
+
 sub run {
     my $self = shift;
     my ($exit_cb) = @_;
+
+    $self->{'is_tty'} = -t STDERR;
+    if ($self->{'is_tty'}) {
+	$self->{'delay'} = 1000; # 1 second
+    } else {
+	$self->{'delay'} = 15000; # 15 seconds
+    }
+    $self->{'last_is_size'} = 0;
 
     die "already called" if $self->{'exit_cb'};
     $self->{'exit_cb'} = $exit_cb;
@@ -163,7 +230,21 @@ sub run {
 
     # open up a trace log file and put our imprimatur on it, unless dry_runing
     if (!$self->{'opt_dry_run'}) {
+	if (!$self->do_amcleanup()) {
+	    return $self->bail_already_running();
+	}
 	log_add($L_INFO, "amvault pid $$");
+
+	# Check we own the log file
+	open(my $tl, "<", $self->{'trace_log_filename'})
+	    or die("could not open trace log file '$self->{'trace_log_filename'}': $!");
+	if (<$tl> !~ /^INFO amvault amvault pid $$/) {
+	    debug("another amdump raced with this one, and won");
+	    close($tl);
+	    return $self->bail_already_running();
+	}
+	close($tl);
+	$self->{'start_time'} = time;
 	log_add($L_START, "date " . $self->{'dst_write_timestamp'});
 	Amanda::Debug::add_amanda_log_handler($amanda_log_trace_log);
 	$self->{'cleanup'}{'roll_trace_log'} = 1;
@@ -186,7 +267,9 @@ sub setup_src {
 
     $src->{'seen_labels'} = {};
 
-    $src->{'interactivity'} = main::Interactivity->new();
+    if ($self->{'opt_interactivity'}) {
+	$src->{'interactivity'} = main::Interactivity->new();
+    }
 
     $src->{'scan'} = Amanda::Recovery::Scan->new(
 	    chg => $src->{'chg'},
@@ -208,12 +291,15 @@ sub setup_src {
 	$self->vlog("Using latest timestamp: $ts");
     }
 
-    # we need to combine fulls_only, src_write_timestamp, and the set
-    # of dumpspecs.  If they contradict one another, then drop the
+    # we need to combine fulls_only, latest_fulls, incr_only,
+    # src_write_timestamp, and the set of dumpspecs.
+    # If they contradict one another, then drop the
     # non-matching dumpspec with a warning.
     my @dumpspecs;
     if ($self->{'opt_dumpspecs'}) {
-	my $level = $self->{'fulls_only'}? "0" : undef;
+	my $level = $self->{'fulls_only'}? "=0" :
+		    $self->{'latest_fulls'}? "=0" :
+		    $self->{'incrs_only'}? "1-399" : undef;
 	my $swt = $self->{'src_write_timestamp'};
 
 	# filter and adjust the dumpspecs
@@ -231,12 +317,21 @@ sub setup_src {
 	    }
 
 	    if (defined $level) {
-		if (defined $ds_level &&
-		    !match_level($ds_level, $level)) {
-		    $self->vlog("WARNING: dumpspec " . $ds->format() .
-			    " specifies non-full dumps, contradicting --fulls-only;" .
-			    " ignoring dumpspec");
-		    next;
+		if (defined $ds_level) {
+		    if ($self->{'fulls_only'} &&
+			!match_level($ds_level, '0')) {
+			$self->vlog("WARNING: dumpspec " . $ds->format() .
+			    " specifies non-full dumps, contradicting" .
+			    " --fulls-only; ignoring dumpspec");
+			next;
+		    }
+		    if ($self->{'incrs_only'} &&
+			$ds_level eq '0' || $ds_level eq '=0') {
+			$self->vlog("WARNING: dumpspec " . $ds->format() .
+			    " specifies full dumps, contradicting" .
+			    " --incrs-only; ignoring dumpspec");
+			next;
+		    }
 		}
 		$ds_level = $level;
 	    }
@@ -247,9 +342,11 @@ sub setup_src {
 	}
     } else {
 	# convert the timestamp and level to a dumpspec
-	my $level = $self->{'fulls_only'}? "0" : undef;
+	my $level = $self->{'fulls_only'}? "=0" :
+		    $self->{'latest_fulls'}? "=0" :
+		    $self->{'incrs_only'}? "1-399" : undef;
 	push @dumpspecs, Amanda::Cmdline::dumpspec_t->new(
-		undef, undef, $self->{'src_write_timestamp'}, $level, undef);
+		undef, undef, undef, $level, $self->{'src_write_timestamp'});
     }
 
     # if we ignored all of the dumpspecs and didn't create any, then dump
@@ -283,7 +380,9 @@ sub setup_src {
     }
 
     Amanda::Recovery::Planner::make_plan(
+	    latest_fulls => $self->{'latest_fulls'},
 	    dumpspecs => \@dumpspecs,
+	    src_labelstr => $self->{'src_labelstr'},
 	    changer => $src->{'chg'},
 	    plan_cb => sub { $self->plan_cb(@_) });
 }
@@ -385,7 +484,7 @@ sub scribe_started {
 
     my $xfers_finished = sub {
 	my ($err) = @_;
-	$self->failure($err) if $err;
+	return $self->failure($err) if $err;
 	$self->quit(0);
     };
 
@@ -405,7 +504,7 @@ sub xfer_dumps {
 	    cb_ref => \$finished_cb;
 
     step get_dump => sub {
-	# reset tracking for teh current dump
+	# reset tracking for the current dump
 	$self->{'current'} = $current = {
 	    src_result => undef,
 	    src_errors => undef,
@@ -441,17 +540,42 @@ sub xfer_dumps {
         my ($errors, $header, $xfer_src_, $directtcp_supported) = @_;
 	$xfer_src = $xfer_src_;
 
-	return $finished_cb->(join("\n", @$errors))
-	    if $errors;
+	if ($errors) {
+	    my $msg = join("; ", @$errors);
+	    my $dump = $current->{'dump'};
+	    log_add_full($L_FAIL, "taper", sprintf("%s %s %s %s %s %s",
+		quote_string($dump->{'hostname'}.""), # " is required for SWIG..
+		quote_string($dump->{'diskname'}.""),
+		$dump->{'dump_timestamp'},
+		$dump->{'level'},
+                'error',
+                $msg));
+	    $self->vlog($msg);
+	    # next dump
+	    return $steps->{'get_dump'}->();
+	}
 
 	$current->{'header'} = $header;
 
 	# set up splitting args from the tapetype only, since we have no DLEs
 	my $tt = lookup_tapetype(getconf($CNF_TAPETYPE));
 	sub empty2undef { $_[0]? $_[0] : undef }
+	my $dle_allow_split = 1;
+	my $dle = Amanda::Disklist::get_disk($header->{'name'},
+					     $header->{'disk'});
+	if (defined $dle) {
+	    $dle_allow_split = dumptype_getconf($dle->{'config'}, $DUMPTYPE_ALLOW_SPLIT);
+	}
+	my $xdt_first_dev = $dst->{'scribe'}->get_device();
+	if (!defined $xdt_first_dev) {
+	    return $finished_cb->("no device is available to create an xfer_dest");
+	}
+	my $leom_supported = $xdt_first_dev->property_get("leom");
 	my %xfer_dest_args;
 	if ($tt) {
 	    %xfer_dest_args = get_splitting_args_from_config(
+		dle_allow_split => $dle_allow_split,
+		leom_supported => $leom_supported,
 		part_size_kb =>
 		    empty2undef(tapetype_getconf($tt, $TAPETYPE_PART_SIZE)),
 		part_cache_type_enum =>
@@ -461,8 +585,12 @@ sub xfer_dumps {
 		part_cache_max_size =>
 		    empty2undef(tapetype_getconf($tt, $TAPETYPE_PART_CACHE_MAX_SIZE)),
 	    );
+	} else {
+	    # split only if LEOM is supported.
+	    %xfer_dest_args = get_splitting_args_from_config(
+		dle_allow_split => $dle_allow_split,
+		leom_supported => $leom_supported);
 	}
-	# (else leave %xfer_dest_args empty, for no splitting)
 
 	$xfer_dst = $dst->{'scribe'}->get_xfer_dest(
 	    max_memory => getconf($CNF_DEVICE_OUTPUT_BUFFER_SIZE),
@@ -475,6 +603,22 @@ sub xfer_dumps {
 	my $size = 0;
 	$size = $current->{'dump'}->{'bytes'} if exists $current->{'dump'}->{'bytes'};
 	$xfer->start($steps->{'handle_xmsg'}, 0, $size);
+
+	if (!$self->{'timer'}) {
+	    $self->{'timer'} = Amanda::MainLoop::timeout_source($self->{'delay'});
+	    $self->{'timer'}->set_callback(sub {
+		my $size = $dst->{'scribe'}->get_bytes_written();
+		if ($self->{'is_tty'}) {
+		    if (!$self->{'last_is_size'}) {
+			print STDERR "\n";
+			$self->{'last_is_size'} = 1;
+		    }
+	            print STDERR "\r" . int($size/1024) . " kb ";
+		} else {
+		    debug("WRITTEN SIZE: " . int($size/1024) . " kb");
+		}
+	    });
+	}
 
 	# count the "threads" running here (clerk and scribe)
 	$n_threads = 2;
@@ -560,12 +704,8 @@ sub xfer_dumps {
 		($logtype == $L_PARTIAL and @errors)? " $msg" : ""));
 	}
 
-	if (@errors) {
-	    return $finished_cb->("transfer failed: " .  join("; ", @errors));
-	} else {
-	    # rinse, wash, and repeat
-	    return $steps->{'get_dump'}->();
-	}
+	# next dump
+	return $steps->{'get_dump'}->();
     };
 }
 
@@ -576,6 +716,15 @@ sub quit {
 
     my $steps = define_steps
 	    cb_ref => \$exit_cb;
+
+    step quit_timer => sub {
+	if (defined $self->{'timer'}) {
+	    $self->{'timer'}->remove();
+	    $self->{'timer'} = undef;
+	}
+
+	$steps->{'check_exporting'}->();
+    };
 
     # the export may not start until we quit the scribe, so wait for it now..
     step check_exporting => sub {
@@ -602,7 +751,14 @@ sub quit {
 	$self->{'dst'}{'scan'}->quit();
 	my ($err) = @_;
 	if ($err) {
+	    if ($self->{'is_tty'}) {
+		if ($self->{'last_is_size'}) {
+		    print STDERR "\n";
+		    $self->{'last_is_size'} = 0;
+		}
+	    }
 	    print STDERR "$err\n";
+	    debug("scribe error: $err");
 	    $exit_status = 1;
 	}
 
@@ -622,7 +778,14 @@ sub quit {
     step quit_clerk_finished => sub {
 	my ($err) = @_;
 	if ($err) {
+	    if ($self->{'is_tty'}) {
+		if ($self->{'last_is_size'}) {
+		    print STDERR "\n";
+		    $self->{'last_is_size'} = 0;
+		}
+	    }
 	    print STDERR "$err\n";
+	    debug("clerk error: $err");
 	    $exit_status = 1;
 	}
 
@@ -630,8 +793,18 @@ sub quit {
     };
 
     step roll_log => sub {
+	if (defined $self->{'src'}->{'chg'}) {
+	    $self->{'src'}->{'chg'}->quit();
+	    $self->{'src'}->{'chg'} = undef;
+	}
+	if (defined $self->{'dst'}->{'chg'}) {
+	    $self->{'dst'}->{'chg'}->quit();
+	    $self->{'dst'}->{'chg'} = undef;
+	}
 	if ($self->{'cleanup'}{'roll_trace_log'}) {
 	    log_add_full($L_FINISH, "driver", "fake driver finish");
+	    $self->{'end_time'} = time;
+	    log_add_full($L_FINISH, "amvault", "date $self->{'dst_write_timestamp'} time " . ($self->{'end_time'} - $self->{'start_time'}));
 	    log_add($L_INFO, "pid-done $$");
 
 	    my @amreport_cmd = ("$sbindir/amreport", $self->{'config_name'}, "--from-amdump",
@@ -652,6 +825,12 @@ sub quit {
 sub failure {
     my $self = shift;
     my ($msg) = @_;
+    if ($self->{'is_tty'}) {
+	if ($self->{'last_is_size'}) {
+	    print STDERR "\n";
+	    $self->{'last_is_size'} = 0;
+	}
+    }
     print STDERR "$msg\n";
 
     debug("failure: $msg");
@@ -686,6 +865,9 @@ sub request_volume_permission {
     $params{'perm_cb'}->(allow => 1);
 }
 
+sub scribe_ready {
+}
+
 sub scribe_notif_new_tape {
     my $self = shift;
     my %params = @_;
@@ -701,6 +883,12 @@ sub scribe_notif_new_tape {
     } else {
 	$self->{'dst'}->{'label'} = undef;
 
+	if ($self->{'is_tty'}) {
+	    if ($self->{'last_is_size'}) {
+		print STDERR "\n";
+		$self->{'last_is_size'} = 0;
+	    }
+	}
 	print STDERR "Could not start new destination volume: $params{error}";
     }
 }
@@ -740,6 +928,7 @@ sub scribe_notif_log_info {
     my $self = shift;
     my %params = @_;
 
+    debug("$params{'message'}");
     log_add_full($L_INFO, "taper", $params{'message'});
 }
 
@@ -772,6 +961,12 @@ sub scribe_notif_tape_done {
     step inventory_cb => sub {
 	my ($err, $inventory) = @_;
 	if ($err) {
+	    if ($self->{'is_tty'}) {
+		if ($self->{'last_is_size'}) {
+		    print STDERR "\n";
+		    $self->{'last_is_size'} = 0;
+		}
+	    }
 	    print STDERR "Could not get destination inventory: $err\n";
 	    return $steps->{'done'}->();
 	}
@@ -790,9 +985,21 @@ sub scribe_notif_tape_done {
 	}
 
 	if (!$ie_slot) {
+	    if ($self->{'is_tty'}) {
+		if ($self->{'last_is_size'}) {
+		    print STDERR "\n";
+		    $self->{'last_is_size'} = 0;
+		}
+	    }
 	    print STDERR "No import/export slots available; skipping export\n";
 	    return $steps->{'done'}->();
 	} elsif (!$from_slot) {
+	    if ($self->{'is_tty'}) {
+		if ($self->{'last_is_size'}) {
+		    print STDERR "\n";
+		    $self->{'last_is_size'} = 0;
+		}
+	    }
 	    print STDERR "Could not find the just-written tape; skipping export\n";
 	    return $steps->{'done'}->();
 	} else {
@@ -817,6 +1024,12 @@ sub scribe_notif_tape_done {
     step moved => sub {
 	my ($err) = @_;
 	if ($err) {
+	    if ($self->{'is_tty'}) {
+		if ($self->{'last_is_size'}) {
+		    print STDERR "\n";
+		    $self->{'last_is_size'} = 0;
+		}
+	    }
 	    print STDERR "While exporting just-written tape: $err (ignored)\n";
 	}
 	$steps->{'done'}->();
@@ -873,7 +1086,9 @@ sub usage {
 **NOTE** this interface is under development and will change in future releases!
 
 Usage: amvault [-o configoption...] [-q] [--quiet] [-n] [--dry-run]
-	   [--fulls-only] [--export] [--src-timestamp src-timestamp]
+	   [--fulls-only] [--latest-fulls] [--incrs-only] [--export]
+	   [--no-interactivity] [--src-labelstr labelstr]
+	   [--src-timestamp src-timestamp] [--exact-match]
 	   --label-template label-template --dst-changer dst-changer
 	   [--autolabel autolabel-arg...]
 	   config
@@ -882,11 +1097,15 @@ Usage: amvault [-o configoption...] [-q] [--quiet] [-n] [--dry-run]
     -o: configuration override (see amanda(8))
     -q: quiet progress messages
     --fulls-only: only copy full (level-0) dumps
+    --latest-fulls: copy the latest full of every dle
+    --incrs-only: only copy incremental (level > 0) dumps
     --export: move completed destination volumes to import/export slots
     --src-timestamp: the timestamp of the Amanda run that should be vaulted
     --label-template: the template to use for new volume labels
     --dst-changer: the changer to which dumps should be written
     --autolabel: similar to the amanda.conf parameter; may be repeated (default: empty)
+    --no-interactivity: disable interactivity
+    --str-labelstr: vault from volume with label matching this labelstr
 
 Copies data from the run with timestamp <src-timestamp> onto volumes using
 the changer <dst-changer>, labeling new volumes with <label-template>.  If
@@ -909,11 +1128,16 @@ my @config_overrides_opts;
 my $opt_quiet = 0;
 my $opt_dry_run = 0;
 my $opt_fulls_only = 0;
+my $opt_latest_fulls = 0;
+my $opt_incrs_only = 0;
+my $opt_exact_match = 0;
 my $opt_export = 0;
 my $opt_autolabel = {};
 my $opt_autolabel_seen = 0;
 my $opt_src_write_timestamp;
+my $opt_src_labelstr;
 my $opt_dst_changer;
+my $opt_interactivity = 1;
 
 sub set_label_template {
     usage("only one --label-template allowed") if $opt_autolabel->{'template'};
@@ -921,27 +1145,35 @@ sub set_label_template {
 }
 
 sub add_autolabel {
-    my ($opt, $val) = @_;
-    $val = lc($val);
-    $val =~ s/-/_/g;
+    my ($opt, $values) = @_;
+    $values = lc($values);
+    $values =~ s/-/_/g;
 
-    $opt_autolabel_seen = 1;
-    my @ok = qw(other_config non_amanda volume_error empty);
-    for (@ok) {
-	if ($val eq $_) {
-	    $opt_autolabel->{$_} = 1;
-	    return;
-	}
-    }
-    if ($val eq 'any') {
+    my @values = split ' ', $values;
+    my @bad_values;
+    foreach my $val (@values) {
+	$opt_autolabel_seen = 1;
+	my @ok = qw(other_config non_amanda volume_error empty);
 	for (@ok) {
-	    $opt_autolabel->{$_} = 1;
+	    if ($val eq $_) {
+		$opt_autolabel->{$_} = 1;
+		$val = "";
+	    }
 	}
-	return;
+	if ($val eq 'any') {
+	    for (@ok) {
+		$opt_autolabel->{$_} = 1;
+	    }
+	    $val = "";
+	}
+	push @bad_values, $val if $val ne "";
     }
-    usage("unknown --autolabel value '$val'");
+    if (@bad_values) {
+	usage("unknown --autolabel value '" . join(',', @bad_values) . "'");
+    }
 }
 
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw{ bundling });
 GetOptions(
     'o=s' => sub {
@@ -951,11 +1183,16 @@ GetOptions(
     'q|quiet' => \$opt_quiet,
     'n|dry-run' => \$opt_dry_run,
     'fulls-only' => \$opt_fulls_only,
+    'latest-fulls' => \$opt_latest_fulls,
+    'incrs-only' => \$opt_incrs_only,
+    'exact-match' => \$opt_exact_match,
     'export' => \$opt_export,
     'label-template=s' => \&set_label_template,
     'autolabel=s' => \&add_autolabel,
     'src-timestamp=s' => \$opt_src_write_timestamp,
+    'src-labelstr=s' => \$opt_src_labelstr,
     'dst-changer=s' => \$opt_dst_changer,
+    'interactivity!' => \$opt_interactivity,
     'version' => \&Amanda::Util::version_opt,
     'help' => \&usage,
 ) or usage("usage error");
@@ -964,13 +1201,19 @@ $opt_autolabel->{'empty'} = 1 unless $opt_autolabel_seen;
 usage("not enough arguments") unless (@ARGV >= 1);
 
 my $config_name = shift @ARGV;
-my @opt_dumpspecs = parse_dumpspecs(\@ARGV, $CMDLINE_PARSE_DATESTAMP|$CMDLINE_PARSE_LEVEL)
+my $cmd_flags = $CMDLINE_PARSE_DATESTAMP|$CMDLINE_PARSE_LEVEL;
+$cmd_flags |= $CMDLINE_EXACT_MATCH if $opt_exact_match;
+my @opt_dumpspecs = parse_dumpspecs(\@ARGV, $cmd_flags)
     if (@ARGV);
 
 usage("no --label-template given") unless $opt_autolabel->{'template'};
 usage("no --dst-changer given") unless $opt_dst_changer;
 usage("specify something to select the source dumps") unless
-    $opt_src_write_timestamp or $opt_fulls_only or @opt_dumpspecs;
+    $opt_src_write_timestamp or $opt_fulls_only or $opt_latest_fulls or
+    $opt_incrs_only or @opt_dumpspecs;
+
+usage("The following options are incompatible: --fulls-only, --latest-fulls and --incrs-only") if
+      ($opt_fulls_only + $opt_latest_fulls + $opt_incrs_only) > 1;
 
 set_config_overrides($config_overrides);
 config_init($CONFIG_INIT_EXPLICIT_NAME, $config_name);
@@ -985,6 +1228,14 @@ if ($cfgerr_level >= $CFGERR_WARNINGS) {
 
 Amanda::Util::finish_setup($RUNNING_AS_DUMPUSER);
 
+# and the disklist
+my $diskfile = Amanda::Config::config_dir_relative(getconf($CNF_DISKFILE));
+$cfgerr_level = Amanda::Disklist::read_disklist('filename' => $diskfile);
+if ($cfgerr_level >= $CFGERR_ERRORS) {
+    print STDERR "errors processing disklist\n";
+    exit(1);
+}
+
 my $exit_status;
 my $exit_cb = sub {
     ($exit_status) = @_;
@@ -997,11 +1248,15 @@ my $vault = Amvault->new(
     dst_changer => $opt_dst_changer,
     dst_autolabel => $opt_autolabel,
     dst_write_timestamp => Amanda::Util::generate_timestamp(),
+    src_labelstr => $opt_src_labelstr,
     opt_dumpspecs => @opt_dumpspecs? \@opt_dumpspecs : undef,
     opt_dry_run => $opt_dry_run,
     quiet => $opt_quiet,
     fulls_only => $opt_fulls_only,
+    latest_fulls=> $opt_latest_fulls,
+    incrs_only => $opt_incrs_only,
     opt_export => $opt_export,
+    opt_interactivity => $opt_interactivity,
     config_overrides_opts => \@config_overrides_opts);
 Amanda::MainLoop::call_later(sub { $vault->run($exit_cb) });
 Amanda::MainLoop::run();

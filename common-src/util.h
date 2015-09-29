@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -30,7 +31,7 @@
 #define	UTIL_H
 
 #include "amanda.h"
-#include "sl.h"
+#include "am_sl.h"
 
 #include <glib.h>
 #include <glib-object.h>
@@ -69,7 +70,7 @@ int	bind_portrange(int, sockaddr_union *, in_port_t, in_port_t,
  * Other arguments are just like for accept(2).
  */
 int	interruptible_accept(int sock, struct sockaddr *addr, socklen_t *addrlen,
-	    gboolean (*prolong)(gpointer data), gpointer prolong_data);
+	    gboolean (*prolong)(gpointer data), gpointer prolong_data, time_t timeout);
 
 ssize_t	full_writev(int, struct iovec *, int);
 
@@ -393,4 +394,20 @@ void debug_executing(GPtrArray *argv_ptr);
 
 /* execute the program and get the first line from stdout ot stderr */
 char *get_first_line(GPtrArray *argv_ptr);
+
+gboolean make_amanda_tmpdir(void);
+
+typedef struct crc_s {
+    uint32_t crc;
+    off_t    size;
+} crc_t;
+
+extern int have_sse42;
+void make_crc_table(void);
+void crc32_init(crc_t *crc);
+void crc32_add_1byte(uint8_t *buf, size_t len, crc_t *crc);
+void crc32_add_16bytes(uint8_t *buf, size_t len, crc_t *crc);
+void crc32_add(uint8_t *buf, size_t len, crc_t *crc);
+uint32_t crc32_finish(crc_t *crc);
+
 #endif	/* UTIL_H */

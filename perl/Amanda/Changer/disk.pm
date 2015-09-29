@@ -1,8 +1,9 @@
-# Copyright (c) 2008,2009,2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -20,14 +21,16 @@ package Amanda::Changer::disk;
 
 use strict;
 use warnings;
+use Carp;
 use vars qw( @ISA );
 @ISA = qw( Amanda::Changer );
 
 use File::Glob qw( :glob );
 use File::Path;
 use File::Basename;
+use Errno;
 use Amanda::Config qw( :getconf string_to_boolean );
-use Amanda::Debug;
+use Amanda::Debug qw( debug warning );
 use Amanda::Changer;
 use Amanda::MainLoop;
 use Amanda::Device qw( :constants );
@@ -100,6 +103,11 @@ sub new {
 
     bless ($self, $class);
 
+    if ($config->{'changerfile'}) {
+	$self->{'state_filename'} = Amanda::Config::config_dir_relative($config->{'changerfile'});
+    }
+    $self->{'lock-timeout'} = $config->get_property('lock-timeout');
+
     $self->{'num-slot'} = $config->get_property('num-slot');
     $self->{'auto-create-slot'} = $config->get_boolean_property(
 					'auto-create-slot', 0);
@@ -113,6 +121,8 @@ sub new {
     }
 
     $self->_validate();
+    debug("chg-disk: Dir $dir");
+    debug("chg-disk: Using statefile '$self->{state_filename}'");
     return $self->{'fatal_error'} if defined $self->{'fatal_error'};
 
     return $self;
@@ -326,6 +336,7 @@ sub _load_by_slot {
     if (!$self->_slot_exists($slot)) {
 	return $self->make_error("failed", $params{'res_cb'},
 	    reason => "invalid",
+	    slot   => $slot,
 	    message => "Slot $slot not found");
     }
 
@@ -336,7 +347,9 @@ sub _load_by_slot {
 	    message => "Slot $slot is already in use by drive '$drive' and process '$params{state}->{drives}->{$drive}->{pid}'");
     }
 
-    $drive = $self->_alloc_drive();
+    $drive = $self->_alloc_drive($params{'res_cb'});
+    return if ref($drive) ne '';
+
     $self->_load_drive($drive, $slot);
     $self->_set_current($slot) if ($params{'set_current'});
 
@@ -364,7 +377,9 @@ sub _load_by_label {
 			"in use by drive '$drive'");
     }
 
-    $drive = $self->_alloc_drive();
+    $drive = $self->_alloc_drive($params{'res_cb'});
+    return if ref($drive) ne '';
+
     $self->_load_drive($drive, $slot);
     $self->_set_current($slot) if ($params{'set_current'});
 
@@ -399,7 +414,8 @@ sub _make_res {
 # Internal function to find an unused (nonexistent) driveN subdirectory and
 # create it.  Note that this does not add a 'data' symlink inside the directory.
 sub _alloc_drive {
-    my ($self) = @_;
+    my $self = shift;
+    my $res_cb = shift;
     my $n = 0;
 
     while (1) {
@@ -408,9 +424,13 @@ sub _alloc_drive {
 
 	warn "$drive is not a directory; please remove it" if (-e $drive and ! -d $drive);
 	next if (-e $drive);
-	next if (!mkdir($drive)); # TODO probably not a very effective locking mechanism..
-
-	return $drive;
+	if (mkdir($drive)) { # TODO probably not a very effective locking mechanism..
+	    return $drive;
+	}
+	next if ($! == &Errno::EEXIST);
+	return $self->make_error("failed", $res_cb,
+		reason => "device",
+		message => "Can't make directory '$drive': $!");
     }
 }
 
@@ -497,7 +517,7 @@ sub _get_slot_label {
 sub _load_drive {
     my ($self, $drive, $slot) = @_;
 
-    die "'$drive' does not exist" unless (-d $drive);
+    confess "'$drive' does not exist" unless (-d $drive);
     if (-e "$drive/data") {
 	unlink("$drive/data");
     }
@@ -646,6 +666,14 @@ sub try_lock {
     my $self = shift;
     my $cb = shift;
     my $poll = 0; # first delay will be 0.1s; see below
+    my $time;
+
+    if (defined $self->{'lock-timeout'}) {
+	$time = time() + $self->{'lock-timeout'};
+    } else {
+	$time = time() + 1000;
+    }
+
 
     my $steps = define_steps
 	cb_ref => \$cb;
@@ -660,10 +688,13 @@ sub try_lock {
 
     step lock => sub {
 	my $rv = $self->{'fl'}->lock_rd();
-	if ($rv == 1) {
+	if ($rv == 1 && time() < $time) {
 	    # loop until we get the lock, increasing $poll to 10s
 	    $poll += 100 unless $poll >= 10000;
 	    return Amanda::MainLoop::call_after($poll, $steps->{'lock'});
+	} elsif ($rv == 1) {
+	    return $self->make_error("fatal", $cb,
+		message => "Timeout trying to lock '$self->{'umount_lockfile'}'");
 	} elsif ($rv == -1) {
 	    return $self->make_error("fatal", $cb,
 		message => "Error locking '$self->{'umount_lockfile'}'");

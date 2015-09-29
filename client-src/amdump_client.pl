@@ -1,9 +1,10 @@
 #! @PERL@
-# Copyright (c) 2010 Zmanda Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -35,11 +36,17 @@ Amanda::Util::setup_application("amdump_client", "client", $CONTEXT_CMDLINE);
 
 my $config;
 my $config_overrides = new_config_overrides($#ARGV+1);
+my @config_overrides_opts;
+
+debug("Arguments: " . join(' ', @ARGV));
 Getopt::Long::Configure(qw{bundling});
 GetOptions(
     'version' => \&Amanda::Util::version_opt,
     'config=s' => sub { $config = $_[1]; },
-    'o=s' => sub { add_config_override_opt($config_overrides, $_[1]); },
+    'o=s' => sub {
+	push @config_overrides_opts, "-o" . $_[1];
+	add_config_override_opt($config_overrides, $_[1]);
+     },
 ) or usage();
 
 if (@ARGV < 1) {
@@ -69,7 +76,7 @@ my $amservice = $sbindir . '/amservice';
 my $amdump_server = getconf($CNF_AMDUMP_SERVER);
 my $auth = getconf($CNF_AUTH);
 
-my @cmd = ($amservice, '-f', '/dev/null', '-s', $amdump_server, $auth, 'amdumpd');
+my @cmd = ($amservice, '-f', '/dev/null', @config_overrides_opts, '-s', $amdump_server, $auth, 'amdumpd');
 
 debug("cmd: @cmd");
 my $amservice_out;
@@ -99,7 +106,7 @@ if ($cmd eq 'list') {
 		    debug("send: DISK " . Amanda::Util::quote_string($diskname));
 		    print {$amservice_in} "DISK " . Amanda::Util::quote_string($diskname) . "\n";
 		    my $a = <$amservice_out>;
-		    print if ($a != /^DISK /)
+		    print if ($a !~ /^DISK /)
 		}
 	    }
 	}

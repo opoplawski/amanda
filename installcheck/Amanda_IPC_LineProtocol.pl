@@ -1,8 +1,9 @@
-# Copyright (c) 2009 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -305,6 +306,8 @@ my $NMSGS = 10000;
 	POSIX::exit(0);
     };
 
+    $wrh->write("SIMPLE\n");
+
     # and sleep forever, or until killed.
     while (1) { sleep(100); }
 });
@@ -313,6 +316,15 @@ $proto = TestProtocol->new(
     rx_fh => $rx_fh, tx_fh => $tx_fh,
     message_cb => $message_cb);
 $proto->set_message_cb(TestProtocol::QUIT, $quit_cb);
+$proto->set_message_cb(TestProtocol::SIMPLE, sub {
+	push @events, [ shift @_ ];
+	# send $NMSGS messages to the child, which isn't listening yet!
+	for (my $i = 0; $i < $NMSGS; $i++) {
+	    $proto->send(TestProtocol::SIMPLE);
+	}
+	# and then send it SIGUSR1, so it reads those
+	kill USR1 => $pid;
+    });
 $proto->set_message_cb(TestProtocol::BAR, sub {
 	push @events, [ shift @_, { @_ } ];
     });
@@ -320,19 +332,13 @@ $proto->set_message_cb(TestProtocol::BAR, sub {
 # die after 10 minutes
 alarm 600;
 
-# send $NMSGS messages to the child, which isn't listening yet!
-for (my $i = 0; $i < $NMSGS; $i++) {
-    $proto->send(TestProtocol::SIMPLE);
-}
-# and then send it SIGUSR1, so it reads those
-kill USR1 => $pid;
-
 Amanda::MainLoop::run();
 waitpid($pid, 0);
 alarm 0; # cancel the alarm
 
 is_deeply([ @events ],
     [
+	[ "SIMPLE" ],
 	[ "BAR", { mandatory => "got your inputs" } ],
 	[ "QUIT" ],
     ],

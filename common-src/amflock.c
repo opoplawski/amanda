@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -36,7 +37,14 @@
  * New Implementation
  */
 
-static GStaticMutex lock_lock = G_STATIC_MUTEX_INIT;
+#if (GLIB_MAJOR_VERSION > 2 || (GLIB_MAJOR_VERSION == 2 && GLIB_MINOR_VERSION >= 31))
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+  static GStaticMutex lock_lock = G_STATIC_MUTEX_INIT;
+# pragma GCC diagnostic pop
+#else
+  static GStaticMutex lock_lock = G_STATIC_MUTEX_INIT;
+#endif
 static GHashTable *locally_locked_files = NULL;
 static int lock_rw_rd(file_lock *lock, short l_type);
 
@@ -70,6 +78,7 @@ file_lock_free(
 	close(lock->fd);
 
     g_static_mutex_unlock(&lock_lock);
+    g_free(lock);
 }
 
 int
@@ -94,6 +103,7 @@ file_lock_lock(
      * process has locked it */
     if (g_hash_table_lookup(locally_locked_files, lock->filename)) {
 	rv = 1;
+	errno = EBUSY;
 	goto done;
     }
 
@@ -251,16 +261,25 @@ file_lock_write(
     g_assert(lock->locked);
 
     /* seek to position 0, rewrite, and truncate */
-    if (lseek(fd, 0, SEEK_SET) < 0)
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+	g_debug("file_lock_write: failed to lseek: %s", strerror(errno));
+	if (ftruncate(fd, 0) < 0) {};
 	return -1;
+    }
 
     /* from here on out, any errors have corrupted the datafile.. */
-    if (full_write(fd, data, len) < len)
+    if (full_write(fd, data, len) < len) {
+	g_debug("file_lock_write: failed to write: %s", strerror(errno));
+	if (ftruncate(fd, 0) < 0) {};
 	return -1;
+    }
 
     if (lock->len > len) {
-	if (ftruncate(fd, len) < 0)
+	if (ftruncate(fd, len) < 0) {
+	    g_debug("file_lock_write: failed to ftruncate: %s", strerror(errno));
+	    if (ftruncate(fd, 0) < 0) {};
 	    return -1;
+	}
     }
 
     if (lock->data)

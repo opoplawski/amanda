@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 2009 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -177,13 +178,13 @@ dvdrw_device_get_type (void)
 
     if G_UNLIKELY(type == 0) {
         static const GTypeInfo info = {
-            sizeof (VfsDeviceClass),
+            sizeof (DvdRwDeviceClass),
             (GBaseInitFunc) NULL,
             (GBaseFinalizeFunc) NULL,
             (GClassInitFunc) dvdrw_device_class_init,
             (GClassFinalizeFunc) NULL,
             NULL /* class_data */,
-            sizeof (VfsDevice),
+            sizeof (DvdRwDevice),
             0 /* n_preallocs */,
             (GInstanceInitFunc) dvdrw_device_init,
             NULL
@@ -214,15 +215,15 @@ dvdrw_device_register(void)
 	"Treat unmountable volumes as unlabelled when reading label");
 
     device_property_fill_and_register(&device_property_dvdrw_growisofs_command,
-	G_TYPE_BOOLEAN, "dvdrw_growisofs_command",
+	G_TYPE_STRING, "dvdrw_growisofs_command",
 	"The location of the growisofs command used to write the DVD-RW");
 
     device_property_fill_and_register(&device_property_dvdrw_mount_command,
-	G_TYPE_BOOLEAN, "dvdrw_mount_command",
+	G_TYPE_STRING, "dvdrw_mount_command",
 	"The location of the mount command used to mount the DVD-RW filesystem for reading");
 
     device_property_fill_and_register(&device_property_dvdrw_umount_command,
-	G_TYPE_BOOLEAN, "dvdrw_umount_command",
+	G_TYPE_STRING, "dvdrw_umount_command",
 	"The location of the umount command used to unmount the DVD-RW filesystem after reading");
 
     register_device(dvdrw_device_factory, device_prefix_list);

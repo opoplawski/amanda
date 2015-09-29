@@ -1,8 +1,9 @@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This library is free software; you can redistribute it and/or modify it
-# under the terms of the GNU Lesser General Public License version 2.1 as
-# published by the Free Software Foundation.
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+#* License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
 #
 # This library is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -315,6 +316,13 @@ sub quit {
     }
 }
 
+sub set_write_timestamp {
+    my $self = shift;
+    my $write_timestamp = shift;
+
+    $self->{'write_timestamp'} = $write_timestamp;
+}
+
 sub scan {
     my $self = shift;
     my %params = @_;
@@ -337,6 +345,7 @@ sub oldest_reusable_volume {
     for my $tle (@{$self->{'tapelist'}->{'tles'}}) {
 	next unless $tle->{'reuse'};
 	next if $tle->{'datestamp'} eq '0' and !$params{'new_label_ok'};
+	next if $tle->{'label'} !~ $self->{'labelstr'};
 	$num_acceptable++;
 	$best = $tle;
     }
@@ -357,6 +366,11 @@ sub is_reusable_volume {
     return 0 unless $vol_tle->{'reuse'};
     if ($vol_tle->{'datestamp'} eq '0') {
 	return $params{'new_label_ok'};
+    }
+
+    if (defined $self->{'write_timestamp'} and
+	$vol_tle->{'datestamp'} eq $self->{'write_timestamp'}) {
+	return 0;
     }
 
     # see if it's in the collection of reusable volumes

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -59,6 +60,7 @@ typedef struct amhost_s {
 
 typedef struct disk_s {
     int		line;			/* line number of last definition */
+    char       *filename;               /* the filename where it is read */
     struct disk_s *prev, *next;		/* doubly linked disk list */
 
     am_host_t	*host;			/* host list */
@@ -78,14 +80,15 @@ typedef struct disk_s {
     char	*client_username;	/* username to connect on the client */
     char	*client_port;		/* port to connect on the client */
     char	*ssh_keys;		/* ssh_key file to use */
-    sl_t	*exclude_file;		/* file exclude spec */
-    sl_t	*exclude_list;		/* exclude list */
-    sl_t	*include_file;		/* file include spec */
-    sl_t	*include_list;		/* include list */
+    am_sl_t	*exclude_file;		/* file exclude spec */
+    am_sl_t	*exclude_list;		/* exclude list */
+    am_sl_t	*include_file;		/* file include spec */
+    am_sl_t	*include_list;		/* include list */
     int		exclude_optional;	/* exclude list are optional */
     int		include_optional;	/* include list are optional */
     int		priority;		/* priority of disk */
     int		allow_split;
+    int         max_warnings;
     off_t	splitsize;
     off_t	tape_splitsize;         /* size of dumpfile chunks on tape */
     char	*split_diskbuffer;      /* place where we can buffer PORT-WRITE dumps other than RAM */
@@ -113,7 +116,8 @@ typedef struct disk_s {
     int		record;			/* record dump in /etc/dumpdates ? */
     int		skip_incr;		/* incs done externally ? */
     int		skip_full;		/* fulls done externally ? */
-    int		to_holdingdisk;		/* use holding disk ? */
+    int		orig_holdingdisk;	/* original holdingdisk setting */
+    int		to_holdingdisk;		/* holding disk setting */
     int		kencrypt;
     int		index;			/* produce an index ? */
     data_path_t	data_path;		/* defined data-path */
@@ -163,10 +167,11 @@ char *optionstr(disk_t *dp);
 GPtrArray *validate_optionstr(disk_t *dp);
 char *xml_optionstr(disk_t *dp, int to_server);
 char *xml_estimate(estimatelist_t estimatelist, am_feature_t *their_features);
-char *clean_dle_str_for_client(char *dle_str);
+char *clean_dle_str_for_client(char *dle_str, am_feature_t *their_features);
 char *xml_application(disk_t *dp, application_t *application,
 		      am_feature_t *their_features);
 char *xml_scripts(identlist_t pp_scriptlist, am_feature_t *their_features);
+char *xml_dumptype_properties(disk_t *dp);
 
 /* disable_skip_disk() set the db->todo flag to 0 for each dle with 'ignore'
  * 'strategy skip'. It is useful for all programs that want to skip them,i
@@ -175,9 +180,11 @@ char *xml_scripts(identlist_t pp_scriptlist, am_feature_t *their_features);
  */
 void disable_skip_disk(disklist_t *origqp);
 
-char *match_disklist(disklist_t *origqp, int sargc, char **sargv);
-gboolean match_dumpfile(dumpfile_t *file, int sargc, char **sargv);
-void free_disklist(disklist_t *dl);
+char *match_disklist(disklist_t *origqp, gboolean exact_match, int sargc,
+		     char **sargv);
+gboolean match_dumpfile(dumpfile_t *file, gboolean exact_match, int sargc,
+			char **sargv);
+void unload_disklist(void);
 
 netif_t *disklist_netifs(void);
 

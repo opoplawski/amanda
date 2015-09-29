@@ -98,13 +98,14 @@ AC_DEFUN([AMANDA_CHECK_NET_LIBS], [
 #   "out of the box" on more boxes.
 #
 AC_DEFUN([AMANDA_CHECK_GLIB], [
-    AC_ARG_VAR(GLIB_CFLAGS, [CFLAGS to build with glib; disables use of pkg-config])
-    AC_ARG_VAR(GLIB_LIBS, [libraries to build with glib; disables use of pkg-config])
-    AC_ARG_VAR(GLIB_GENMARSHAL, [genmarshal binary to use with glib; disables use of pkg-config])
-    AC_ARG_VAR(GOBJECT_QUERY, [gobject_query binary to use with glib; disables use of pkg-config])
-    AC_ARG_VAR(GLIB_MKENUMS, [mkenums binary to use with glib; disables use of pkg-config])
+    AC_ARG_VAR(GLIB_CFLAGS, [CFLAGS to build with glib; disables use of pkg-config; must specify all GLIB_ vars])
+    AC_ARG_VAR(GLIB_LIBS, [libraries to build with glib; disables use of pkg-config; must specify all GLIB_vars])
+    AC_ARG_VAR(GLIB_GENMARSHAL, [genmarshal binary to use with glib; disables use of pkg-config; must specify all GLIB_ vars])
+    AC_ARG_VAR(GOBJECT_QUERY, [gobject_query binary to use with glib; disables use of pkg-config; must specify all GLIB_ vars])
+    AC_ARG_VAR(GLIB_MKENUMS, [mkenums binary to use with glib; disables use of pkg-config; must specify all GLIB_ vars])
 
-    # if any of the precious variables are set, disable the pkg-config run
+    # if any of the precious variables are set, disable the pkg-config run.
+    # Further, if any is specified, all must be specified.
     explicit_glib=no
     test x"$GLIB_CFLAGS" = x"" || explicit_glib=yes
     test x"$GLIB_LIBS" = x"" || explicit_glib=yes
@@ -115,7 +116,7 @@ AC_DEFUN([AMANDA_CHECK_GLIB], [
     if test x"$explicit_glib" = x"no"; then
 	# search for pkg-config, which the glib configuration uses, adding a few
 	# system-specific search paths.
-	AC_PATH_PROG(PKG_CONFIG, pkg-config, [], $LOCSYSPATH:/opt/csw/bin:/usr/local/bin:/opt/local/bin)
+	AC_PATH_PROG(PKG_CONFIG, pkg-config, [], $LOCSYSPATH:/opt/csw/bin:/usr/local/bin:/opt/local/bin:/opt/csw/bin)
 
 	case "$host" in
 	    sparc-sun-solaris2.8) # Solaris 8
@@ -134,7 +135,21 @@ AC_DEFUN([AMANDA_CHECK_GLIB], [
 	    AC_MSG_ERROR(glib not found or too old; See http://wiki.zmanda.com/index.php/Installation for help)
 	], gmodule gobject gthread)
     else
-	AC_MSG_ERROR(explicit glib)
+        # Confirm that all GLIB_ variables are set
+        if test ! x"$GLIB_CFLAGS" = x"" && \
+           test ! x"$GLIB_LIBS" = x"" && \
+           test ! x"$GLIB_GENMARSHAL" = x"" && \
+           test ! x"$GOBJECT_QUERY" = x"" && \
+           test ! x"$GLIB_MKENUMS" = x""; then
+            :
+        else
+            AC_MSG_ERROR(Not all precious glib variables were set.)
+        fi
+    fi
+
+    # remove deprecated warning for newer version
+    if $PKG_CONFIG --atleast-version 2.30.0 glib-2.0; then
+	AMANDA_DISABLE_GCC_WARNING(deprecated-declarations)
     fi
 
     # GLIB_CPPFLAGS is not set by autoconf, yet GLIB_CFLAGS contains what GLIB_CPPFLAGS should contain.
@@ -371,6 +386,41 @@ x=CURLOPT_VERBOSE;
         fi
      fi
 
+      LIBCURL_USE_NSS=no
+      LIBCURL_USE_GNUTLS=no
+      LIBCURL_USE_OPENSSL=yes
+     _libcurl_configures=`$_libcurl_config --configure`
+     for _libcurl_configure in $_libcurl_configures ; do
+	if [[[ $_libcurl_configure = \'--with-nss* ]]]; then
+	    LIBCURL_USE_NSS=yes
+	fi
+	if [[[ $_libcurl_configure = \'--without-nss* ]]]; then
+	    LIBCURL_USE_NSS=no
+	fi
+	if [[[ $_libcurl_configure = \'--with-gnutls* ]]]; then
+	    LIBCURL_USE_GNUTLS=yes
+	fi
+	if [[[ $_libcurl_configure = \'--without-gnutls* ]]]; then
+	    LIBCURL_USE_GNUTLS=no
+	fi
+	if [[[ $_libcurl_configure = \'--with-ssl* ]]]; then
+	    LIBCURL_USE_OPENSSL=yes
+	fi
+	if [[[ $_libcurl_configure = \'--without-ssl* ]]]; then
+	    LIBCURL_USE_OPENSSL=no
+	fi
+     done
+
+     if test "x$LIBCURL_USE_NSS" = "xyes"; then
+       AC_DEFINE(LIBCURL_USE_NSS, 1, [Defined if libcurl use NSS])
+     fi
+     if test "x$LIBCURL_USE_GNUTLS" = "xyes"; then
+       AC_DEFINE(LIBCURL_USE_GNUTLS, , [Defined if libcurl use GnuTLS])
+     fi
+     if test "x$LIBCURL_USE_OPENSSL" = "xyes"; then
+       AC_DEFINE(LIBCURL_USE_OPENSSL, 1, [Defined if libcurl use OpenSSL])
+     fi
+
      unset _libcurl_try_link
      unset _libcurl_version_parse
      unset _libcurl_config
@@ -380,6 +430,8 @@ x=CURLOPT_VERBOSE;
      unset _libcurl_protocols
      unset _libcurl_version
      unset _libcurl_ldflags
+     unset _libcurl_configure
+     unset _libcurl_configures
   fi
 
   if test x$_libcurl_with = xno || test x$libcurl_cv_lib_curl_usable != xyes ; then

@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998, 2000 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -436,8 +437,6 @@ main(
 
     config = newstralloc(config, DEFAULT_CONFIG);
 
-    dbrename(config, DBG_SUBDIR_CLIENT);
-
     check_running_as(RUNNING_AS_ROOT);
 
     amfree(server_name);
@@ -511,6 +510,8 @@ main(
 	exit(1);
     }
 
+    dbrename(config, DBG_SUBDIR_CLIENT);
+
     amfree(disk_name);
     amfree(mount_point);
     amfree(disk_path);
@@ -523,6 +524,9 @@ main(
     act.sa_handler = sigint_handler;
     sigemptyset(&act.sa_mask);
     act.sa_flags = 0;
+#ifdef SA_RESTORER
+    act.sa_restorer = NULL;
+#endif
     if (sigaction(SIGINT, &act, &oact) != 0) {
 	error(_("error setting signal handler: %s"), strerror(errno));
 	/*NOTREACHED*/
@@ -531,7 +535,7 @@ main(
     service_name = stralloc2("amandaidx", SERVICE_SUFFIX);
 
     g_printf(_("AMRECOVER Version %s. Contacting server on %s ...\n"),
-	   VERSION, server_name);  
+	   VERSION, server_name);
     if ((sp = getservbyname(service_name, "tcp")) == NULL) {
 	error(_("%s/tcp unknown protocol"), service_name);
 	/*NOTREACHED*/

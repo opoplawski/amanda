@@ -1,8 +1,9 @@
-# Copyright (c) 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2010-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -21,34 +22,67 @@ package Amanda::Report::xml;
 
 use strict;
 use warnings;
+use Carp;
 
 use base qw/Exporter/;
 
 use Amanda::Constants;
 
-our @EXPORT_OK = qw/make_amreport_xml/;
+use Amanda::Config qw(:getconf config_dir_relative);
+use Amanda::Report;
+
+## class functions
+
+sub new
+{
+    my ($class, $report, $config_name, $logfname) = @_;
+
+    my $self = {
+        report      => $report,
+        config_name => $config_name,
+        logfname    => $logfname,
+
+        ## config info
+        org => "" . getconf($CNF_ORG),
+
+        ## statistics
+    };
+
+    bless $self, $class;
+    return $self;
+}
 
 my $indent = " " x 4;
 my $depth  = 0;
 
 ## Public Interface
 
+sub write_report
+{
+    my ( $self, $fh ) = @_;
+
+    $fh || confess "error: no file handle given to Amanda::Report::xml::write_report\n";
+
+    print $fh $self->make_amreport_xml();
+
+}
+
 sub make_amreport_xml
 {
-    my ( $report, $org, $config_name ) = @_;
+    my $self = shift;
     return make_xml_elt(
         "amreport",
         sub {
             return join(
                 "\n",
-                make_xml_elt( "org",    $org ),
-                make_xml_elt( "config", $config_name ),
+                make_xml_elt( "org",    $self->{org} ),
+                make_xml_elt( "config", $self->{config_name} ),
                 make_xml_elt( "date",   time() ),
-                make_programs_xml( $report->{data}{programs} ),
+                make_programs_xml( $self->{report}->{data}{programs} ),
                 map {
                     make_dle_xml( $_->[0], $_->[1],
-                        $report->get_dle_info( $_->[0], $_->[1] ) )
-                  } $report->get_dles()
+                        $self->{report}->get_dle_info( $_->[0], $_->[1] ) )
+                  } $self->{report}->get_dles()
             );
         },
         { version => $Amanda::Constants::VERSION }

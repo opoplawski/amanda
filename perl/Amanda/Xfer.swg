@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -382,7 +383,10 @@ XferElement *xfer_filter_xor(
 %newobject xfer_filter_process;
 XferElement *xfer_filter_process(
     gchar **argv,
-    gboolean need_root);
+    gboolean need_root,
+    gboolean must_drain,
+    gboolean cancel_on_success,
+    gboolean ignore_broken_pipe);
 int get_err_fd(
     XferElement *elt);
 
@@ -509,16 +513,16 @@ xfer_get_amglue_source(
 /* First, a few macros to generate decent Perl */
 
 %define PACKAGE(PKG)
-%perlcode {
+%perlcode %{
 package PKG;
-}
+%}
 %enddef
 
 %define XFER_ELEMENT_SUBCLASS_OF(PARENT)
-%perlcode {
+%perlcode %{
 use vars qw(@ISA);
 @ISA = qw( PARENT );
-}
+%}
 %enddef
 
 %define XFER_ELEMENT_SUBCLASS()
@@ -526,28 +530,28 @@ XFER_ELEMENT_SUBCLASS_OF(Amanda::Xfer::Element)
 %enddef
 
 %define DECLARE_CONSTRUCTOR(C_CONSTRUCTOR)
-%perlcode {
+%perlcode %{
 sub new { 
     my $pkg = shift;
     # The C function adds the proper blessing -- this function
     # just gets $pkg out of the way.
     C_CONSTRUCTOR(@_);
 }
-}
+%}
 %enddef
 
 %define OVERLOAD_REPR()
-%perlcode {
+%perlcode %{
 use overload '""' => sub { $_[0]->repr(); };
 # overload comparison, so users can ask if one obj == another
 use overload '==' => sub {     Amanda::Xfer::same_elements($_[0], $_[1]); };
 use overload '!=' => sub { not Amanda::Xfer::same_elements($_[0], $_[1]); };
-}
+%}
 %enddef
 
 %define DECLARE_METHOD(METHOD_NAME, C_FUNCTION)
-%perlcode {*METHOD_NAME = *C_FUNCTION;
-}
+%perlcode %{ *METHOD_NAME = *C_FUNCTION;
+%}
 %enddef
 
 /* And now define the required perl classes */

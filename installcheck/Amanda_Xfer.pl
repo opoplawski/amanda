@@ -1,8 +1,9 @@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -267,9 +268,9 @@ pass("Two simultaneous transfers run to completion");
     my $xfer = Amanda::Xfer->new([
 	Amanda::Xfer::Source::Random->new(1024*1024, $RANDOM_SEED),
 	Amanda::Xfer::Filter::Process->new(
-	    [ $Amanda::Constants::COMPRESS_PATH, $Amanda::Constants::COMPRESS_BEST_OPT ], 0),
+	    [ $Amanda::Constants::COMPRESS_PATH, $Amanda::Constants::COMPRESS_BEST_OPT ], 0, 0, 0, 0),
 	Amanda::Xfer::Filter::Process->new(
-	    [ $Amanda::Constants::UNCOMPRESS_PATH, $Amanda::Constants::UNCOMPRESS_OPT ], 0),
+	    [ $Amanda::Constants::UNCOMPRESS_PATH, $Amanda::Constants::UNCOMPRESS_OPT ], 0, 0, 0, 0),
 	Amanda::Xfer::Dest::Null->new($RANDOM_SEED),
     ]);
 
@@ -299,7 +300,7 @@ pass("Two simultaneous transfers run to completion");
     my $xfer = Amanda::Xfer->new([
 	Amanda::Xfer::Source::Fd->new($zerofd),
 	Amanda::Xfer::Filter::Process->new(
-	    [ $Amanda::Constants::COMPRESS_PATH, $Amanda::Constants::COMPRESS_BEST_OPT ], 0),
+	    [ $Amanda::Constants::COMPRESS_PATH, $Amanda::Constants::COMPRESS_BEST_OPT ], 0, 0, 0, 0),
 	Amanda::Xfer::Dest::Null->new(0),
     ]);
 
@@ -759,7 +760,7 @@ SKIP: {
 						     2368*1024, 0);
 	},
 	[ "PART-1-OK", "PART-2-OK", "EOM",
-	  "PART-3-OK",
+	  "PART-2-OK",
 	  "DONE" ],
 	"Amanda::Xfer::Dest::Taper::Splitter - LEOM hits in file 2 header");
     test_recovery_source(
@@ -1098,6 +1099,7 @@ SKIP: {
     my $mkdevice = sub {
 	my $dev = Amanda::Device->new("ndmp:127.0.0.1:$ndmp_port\@$drive");
 	die "can't create device" unless $dev->status() == $Amanda::Device::DEVICE_STATUS_SUCCESS;
+	$dev->property_set("indirect", 0) or die "can't set INDIRECT";
 	$dev->property_set("verbose", 1) or die "can't set VERBOSE";
 	$dev->property_set("ndmp_username", "ndmp") or die "can't set username";
 	$dev->property_set("ndmp_password", "ndmp") or die "can't set password";

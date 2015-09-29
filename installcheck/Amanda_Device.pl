@@ -1,8 +1,9 @@
-# Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -16,7 +17,7 @@
 # Contact information: Zmanda Inc, 465 S. Mathilda Ave., Suite 300
 # Sunnyvale, CA 94086, USA, or: http://www.zmanda.com
 
-use Test::More tests => 593;
+use Test::More tests => 550;
 use File::Path qw( mkpath rmtree );
 use Sys::Hostname;
 use Carp;
@@ -33,6 +34,7 @@ use Amanda::Config qw( :getconf :init );
 use Amanda::Xfer qw( :constants );
 use Amanda::Header qw( :constants );
 use Amanda::Paths;
+use Amanda::Constants;
 use Amanda::Util;
 use Amanda::MainLoop;
 use IO::Socket;
@@ -480,6 +482,36 @@ ok($dev->finish(),
    "finish device after LEOM test")
     or diag($dev->error_or_status());
 
+## dvdrw device
+
+$vtape1 = mkvtape(1);
+$dev_name = "dvdrw:$vtape1:/dev/scd0";
+
+$dev = Amanda::Device->new($dev_name);
+is($dev->status(), $DEVICE_STATUS_SUCCESS,
+    "$dev_name: create successful")
+    or diag($dev->error_or_status());
+
+properties_include([ $dev->property_list() ],
+    [ @common_properties, 'max_volume_usage' ],
+    "necessary properties listed on vfs device");
+
+# play with properties a little bit
+ok($dev->property_set("DVDRW_GROWISOFS_COMMAND", "/path/to/growisofs"),
+    "set DVDRW_GROWISOFS_COMMAND");
+
+ok($dev->property_set("dvdrw_mount_command", "/path/to/mount"),
+    "set dvdrw_mount_command");
+
+ok($dev->property_set("dvdrw_umount_command", "/path/to/umount"),
+    "set dvdrw_umount_command");
+
+ok($dev->property_set("block_size", 32768),
+    "set an integer property to an integer");
+
+ok(!($dev->property_set("invalid-property-name", 32768)),
+    "set an invalid-property-name");
+
 ####
 ## Test a RAIT device of two vfs devices.
 
@@ -735,7 +767,7 @@ my $base_name;
 
 SKIP: {
     skip "define \$INSTALLCHECK_S3_{SECRET,ACCESS}_KEY to run S3 tests",
-            101 +
+            103 +
             1 * $verify_file_count +
             7 * $write_file_count +
             13 * $s3_make_device_count
@@ -821,7 +853,7 @@ SKIP: {
     my $hostname  = hostname();
     $hostname =~ s/\./-/g;
     $base_name = "$S3_ACCESS_KEY-installcheck-$hostname";
-    $dev_name = "s3:$base_name-s3";
+    $dev_name = "s3:$base_name-s3-1";
     $dev = s3_make_device($dev_name, "s3");
     $dev->read_label();
     my $status = $dev->status();
@@ -907,12 +939,18 @@ SKIP: {
        "status is unlabeled after an erase")
         or diag($dev->error_or_status());
 
+    ok($dev->erase(),
+       "erase device")
+      or diag($dev->error_or_status());
+
+    $dev_name = "s3:$base_name-s3-2";
     $dev = s3_make_device($dev_name, "s3");
 
     ok($dev->erase(),
        "erase device right after creation")
        or diag($dev->error_or_status());
 
+    $dev_name = "s3:$base_name-s3-3";
     $dev = s3_make_device($dev_name, "s3");
 
     # set MAX_VOLUME_USAGE, LEOM=true, ENFORCE_MAX_VOLUME_USAGE=false
@@ -939,6 +977,7 @@ SKIP: {
        "erase device")
        or diag($dev->error_or_status());
     
+    $dev_name = "s3:$base_name-s3-4";
     $dev = s3_make_device($dev_name, "s3");
 
     # set MAX_VOLUME_USAGE, LEOM=true, ENFORCE_MAX_VOLUME_USAGE=true
@@ -968,6 +1007,7 @@ SKIP: {
        "erase device")
        or diag($dev->error_or_status());
     
+    $dev_name = "s3:$base_name-s3-5";
     $dev = s3_make_device($dev_name, "s3");
 
     # set MAX_VOLUME_USAGE, LEOM=true, ENFORCE_MAX_VOLUME_USAGE=false
@@ -998,7 +1038,7 @@ SKIP: {
        or diag($dev->error_or_status());
     
     # try with empty user token
-    $dev_name = lc("s3:$base_name-s3");
+    $dev_name = lc("s3:$base_name-s3-6");
     $dev = s3_make_device($dev_name, "s3");
     ok($dev->property_set('S3_USER_TOKEN', ''),
        "set devpay user token")
@@ -1041,7 +1081,7 @@ SKIP: {
     $dev_name = lc("s3:$base_name-s3-wild");
     $dev = s3_make_device($dev_name, "s3");
     ok($dev->property_set('S3_BUCKET_LOCATION', '*'),
-       "set S3 bucket location to ''")
+       "set S3 bucket location to '*'")
         or diag($dev->error_or_status());
 
     ok($dev->start($ACCESS_WRITE, "TESTCONF13", undef),
@@ -1053,8 +1093,12 @@ SKIP: {
         or diag($dev->error_or_status());
 
     $dev->finish();
+    ok($dev->erase(),
+       "erase device")
+      or diag($dev->error_or_status());
 
     # test again with invalid ca_info
+    $dev_name = lc("s3:$base_name-s3-ca");
     $dev = s3_make_device($dev_name, "s3");
     SKIP: {
 	skip "SSL not supported; can't check SSL_CA_INFO", 2
@@ -1076,6 +1120,7 @@ SKIP: {
     }
 
     # test again with our own CA bundle
+    $dev_name = lc("s3:$base_name-s3-oca");
     $dev = s3_make_device($dev_name, "s3");
     SKIP: {
 	skip "SSL not supported; can't check SSL_CA_INFO", 4
@@ -1104,14 +1149,14 @@ SKIP: {
        or diag($dev->error_or_status());
 
     # bucket names incompatible with location constraint
-    $dev_name = "s3:-$base_name-s3-eu";
+    $dev_name = "s3:-$base_name-s3-eu-2";
     $dev = s3_make_device($dev_name, "s3");
 
     ok($dev->property_set('S3_BUCKET_LOCATION', ''),
        "should be able to set an empty S3 bucket location with an incompatible name")
         or diag($dev->error_or_status());
 
-    $dev_name = "s3:$base_name-s3.eu";
+    $dev_name = "s3:$base_name-s3.eu-3";
     $dev = s3_make_device($dev_name, "s3");
 
     ok($dev->property_set('S3_BUCKET_LOCATION', ''),
@@ -1125,7 +1170,7 @@ SKIP: {
        "should not be able to set S3 bucket location with an incompatible name")
         or diag($dev->error_or_status());
 
-    $dev_name = lc("s3:$base_name-s3-eu");
+    $dev_name = lc("s3:$base_name-s3-eu-4");
     $dev = s3_make_device($dev_name, "s3");
     ok($dev->property_set('S3_BUCKET_LOCATION', 'XYZ'),
        "should be able to set S3 bucket location with a compatible name")
@@ -1312,7 +1357,7 @@ SKIP: {
 }
 
 SKIP: {
-    skip "not built with ndmp and server", 78 unless
+    skip "not built with ndmp and server", 26 unless
 	Amanda::Util::built_with_component("ndmp") and
 	Amanda::Util::built_with_component("server");
 
@@ -1454,271 +1499,6 @@ SKIP: {
 	"finish device")
 	or diag $dev->error_or_status();
 
-    #
-    # test the directtcp-target implementation
-    #
-
-    ok($dev->directtcp_supported(), "is a directtcp target");
-    for my $dev_use ('initiator', 'listener') {
-	my ($xfer, $addrs, $dest_elt);
-	if ($dev_use eq 'listener') {
-	    $addrs = $dev->listen(1);
-	    ok($addrs, "listen returns successfully") or die($dev->error_or_status());
-
-	    # set up an xfer to write to the device
-	    $dest_elt = Amanda::Xfer::Dest::DirectTCPConnect->new($addrs);
-	} else {
-	    # set up an xfer to write to the device
-	    $dest_elt = Amanda::Xfer::Dest::DirectTCPListen->new();
-	}
-	$xfer = Amanda::Xfer->new([
-		Amanda::Xfer::Source::Random->new(32768*34, 0xB00),
-		$dest_elt,
-	    ]);
-
-	my @messages;
-	$xfer->start(make_cb(xmsg_cb => sub {
-	    my ($src, $msg, $xfer) = @_;
-	    if ($msg->{'type'} == $XMSG_ERROR) {
-		die $msg->{'elt'} . " failed: " . $msg->{'message'};
-	    } elsif ($msg->{'type'} == $XMSG_DONE) {
-		Amanda::MainLoop::quit();
-	    }
-	}));
-
-	# write files from the connection until EOF
-	my $num_files;
-	my $conn;
-	my ($finish_connection, $start_device, $write_file_cb);
-
-
-	$finish_connection = make_cb(finish_connection => sub {
-	    if ($dev_use eq 'listener') {
-		$conn = $dev->accept();
-	    } else {
-		$addrs = $dest_elt->get_addrs();
-		$conn = $dev->connect(1, $addrs);
-	    }
-	    Amanda::MainLoop::call_later($start_device);
-	});
-
-
-	$start_device = make_cb(start_device => sub {
-	    ok($dev->start($ACCESS_WRITE, "TEST2", "20090915000000"),
-		"start device in write mode")
-		or diag $dev->error_or_status();
-
-	    Amanda::MainLoop::call_later($write_file_cb);
-	});
-
-	$write_file_cb = make_cb(write_file_cb => sub {
-	    ++$num_files < 20 or die "I seem to be in a loop!";
-
-	    ok($dev->start_file($hdr), "start file $num_files for writing");
-	    is($dev->file, $num_files, "..file number is correct");
-
-	    my ($ok, $size) = $dev->write_from_connection(32768*15);
-	    push @messages, sprintf("WRITE-%s-%d-%s-%s",
-		$ok?"OK":"ERR", $size,
-		$dev->is_eof()? "EOF":"!eof",
-		$dev->is_eom()? "EOM":"!eom");
-	    ok($ok, "..write from connection succeeds");
-	    my $eof = $dev->is_eof();
-
-	    ok($dev->finish_file(), "..finish file after writing");
-
-	    if (!$eof) {
-		Amanda::MainLoop::call_later($write_file_cb);
-	    }
-	});
-
-	Amanda::MainLoop::call_later($finish_connection);
-	Amanda::MainLoop::run();
-	is_deeply([@messages], [
-		'WRITE-OK-491520-!eof-!eom',
-		'WRITE-OK-491520-!eof-!eom',
-		'WRITE-OK-131072-EOF-!eom',
-	    ],
-	    "a sequence of write_from_connection calls works correctly");
-
-	$dev->finish();
-
-	if (my $err = $conn->close()) {
-	    die $err;
-	}
-    }
-
-    # now try reading that back piece by piece
-
-    {
-	my $filename = "$Installcheck::TMP/Amanda_Device_ndmp.tmp";
-	open(my $dest_fh, ">", $filename);
-
-	ok($dev->start($ACCESS_READ, undef, undef),
-	    "start device in read mode")
-	    or diag $dev->error_or_status();
-
-	my $file;
-	for ($file = 1; $file <= 3; $file++) {
-	    ok($dev->seek_file($file),
-		"seek_file $file");
-	    is($dev->file, $file, "..file num is correct");
-	    is($dev->block, 0, "..block num is correct");
-
-	    # read the file, writing to our temp file.  We'll check that the byte
-	    # sequence is correct later
-	    my $xfer = Amanda::Xfer->new([
-		    Amanda::Xfer::Source::Device->new($dev),
-		    Amanda::Xfer::Dest::Fd->new($dest_fh) ]);
-
-	    $xfer->start(make_cb(xmsg_cb => sub {
-		my ($src, $msg, $xfer) = @_;
-		if ($msg->{'type'} == $XMSG_ERROR) {
-		    die $msg->{'elt'} . " failed: " . $msg->{'message'};
-		} elsif ($msg->{'type'} == $XMSG_DONE) {
-		    Amanda::MainLoop::quit();
-		}
-	    }));
-	    Amanda::MainLoop::run();
-
-	    pass("read back file " . $file);
-	}
-
-	$dev->finish();
-	close $dest_fh;
-
-	# now read back and verify that file
-	open(my $src_fh, "<", $filename);
-	my $xfer = Amanda::Xfer->new([
-		Amanda::Xfer::Source::Fd->new($src_fh),
-		Amanda::Xfer::Dest::Null->new(0xB00) ]);
-
-	$xfer->start(make_cb(xmsg_cb => sub {
-	    my ($src, $msg, $xfer) = @_;
-	    if ($msg->{'type'} == $XMSG_ERROR) {
-		die $msg->{'elt'} . " failed: " . $msg->{'message'};
-	    } elsif ($msg->{'type'} == $XMSG_DONE) {
-		Amanda::MainLoop::quit();
-	    }
-	}));
-	Amanda::MainLoop::run();
-
-	pass("data in the three parts is correct");
-	unlink $filename;
-    }
-
-    ####
-    # Test read_to_connection
-    #
-    # This requires something that can connect to a device and read from
-    # it; the XFA does not have an XFER_MECH_DIRECTTCP_CONNECT, so we fake
-    # it by manually connecting and then setting up an xfer with a regular
-    # XferSourceFd.  This works because the NDMP server will accept an
-    # incoming connection before the Device API accept() method is called;
-    # this trick may not work with other DirectTCP-capable devices.  Also,
-    # this doesn't work so well if there's an error in the xfer (e.g., a
-    # random value mismatch).  But tests are supposed to succeed!
-
-    sub test_read2conn {
-	my ($finished_cb) = @_;
-	my @events;
-	my $file = 1;
-	my ($conn, $sock);
-
-	my $steps = define_steps
-	    cb_ref => \$finished_cb;
-
-	step setup => sub {
-	    my $addrs = $dev->listen(0);
-
-	    # now connect to that
-	    $sock = IO::Socket::INET->new(
-		Proto => "tcp",
-		PeerHost => $addrs->[0][0],
-		PeerPort => $addrs->[0][1],
-		Blocking => 1,
-	    );
-
-	    # and set up a transfer to read from that socket
-	    my $xfer = Amanda::Xfer->new([
-		    Amanda::Xfer::Source::Fd->new($sock),
-		    Amanda::Xfer::Dest::Null->new(0xB00) ]);
-
-	    $xfer->start(make_cb(xmsg_cb => sub {
-		my ($src, $msg, $xfer) = @_;
-		if ($msg->{'type'} == $XMSG_ERROR) {
-		    die $msg->{'elt'} . " failed: " . $msg->{'message'};
-		}
-		if ($msg->{'type'} == $XMSG_DONE) {
-		    push @events, "DONE";
-		    $steps->{'quit'}->();
-		}
-	    }));
-
-	    $steps->{'accept'}->();
-	};
-
-	step accept => sub {
-	    $conn = $dev->accept();
-	    die $dev->error_or_status() unless ($conn);
-
-	    Amanda::MainLoop::call_later($steps->{'start_dev'});
-	};
-
-	step start_dev => sub {
-	    ok($dev->start($ACCESS_READ, undef, undef),
-		"start device in read mode")
-		or diag $dev->error_or_status();
-
-	    Amanda::MainLoop::call_later($steps->{'read_part_cb'});
-	};
-
-	step read_part_cb => sub {
-	    my $hdr = $dev->seek_file($file);
-	    die $dev->error_or_status() unless ($hdr);
-	    my $size = $dev->read_to_connection(0);
-	    push @events, "READ-$size";
-
-	    if (++$file <= 3) {
-		Amanda::MainLoop::call_later($steps->{'read_part_cb'});
-	    } else {
-		# close the connection, which will end the xfer, which will
-		# result in a call to finished_cb.  So there.
-		push @events, "CLOSE";
-		$conn->close();
-	    }
-	};
-
-	step quit => sub {
-	    close $sock or die "close: $!";
-
-	    is_deeply([@events],
-		[ "READ-491520", "READ-491520", "READ-131072", "CLOSE", "DONE" ],
-		"sequential read_to_connection operations read the right amounts " .
-		"and bytestream matches");
-
-	    $finished_cb->();
-	};
-    }
-    test_read2conn(\&Amanda::MainLoop::quit);
-    Amanda::MainLoop::run();
-
-    # try two seek_file's in a row
-    $hdr = $dev->seek_file(2);
-    is($hdr? $hdr->{'type'} : -1, $Amanda::Header::F_DUMPFILE, "seek_file the first time");
-    $hdr = $dev->seek_file(2);
-    is($hdr? $hdr->{'type'} : -1, $Amanda::Header::F_DUMPFILE, "seek_file the second time");
-
-    ## test seek_file's handling of EOM
-
-    $hdr = $dev->seek_file(3);
-    is($hdr->{type}, $Amanda::Header::F_DUMPFILE, "file 3 is a dumpfile");
-    $hdr = $dev->seek_file(4);
-    is($hdr->{type}, $Amanda::Header::F_TAPEEND, "file 4 is tapeend");
-    $hdr = $dev->seek_file(5);
-    is($hdr, undef, "file 5 is an error");
-    $hdr = $dev->seek_file(6);
-    is($hdr, undef, "file 6 is an error");
 
     $ndmp->cleanup();
 }

@@ -1,10 +1,11 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
- * Copyright (c) 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -25,6 +26,7 @@
 #include "directtcp.h"
 #include "util.h"
 #include "sockaddr-util.h"
+#include "stream.h"
 #include "debug.h"
 
 /*
@@ -176,10 +178,11 @@ do_directtcp_accept(
     int *socketp)
 {
     int sock;
+    time_t timeout_time = time(NULL) + 60;
     g_assert(*socketp != -1);
 
     if ((sock = interruptible_accept(*socketp, NULL, NULL,
-				     prolong_accept, self)) == -1) {
+				     prolong_accept, self, timeout_time)) == -1) {
 	/* if the accept was interrupted due to a cancellation, then do not
 	 * add a further error message */
 	if (errno == 0 && XFER_ELEMENT(self)->cancelled)
@@ -195,6 +198,8 @@ do_directtcp_accept(
     close(*socketp);
     *socketp = -1;
 
+    g_debug("do_directtcp_accept: %d", sock);
+
     return sock;
 }
 
@@ -206,6 +211,11 @@ do_directtcp_connect(
     XferElement *elt = XFER_ELEMENT(self);
     sockaddr_union addr;
     int sock;
+#ifdef WORKING_IPV6
+    char strsockaddr[INET6_ADDRSTRLEN + 20];
+#else
+    char strsockaddr[INET_ADDRSTRLEN + 20];
+#endif
 
     if (!addrs) {
 	g_debug("element-glue got no directtcp addresses to connect to!");
@@ -220,8 +230,53 @@ do_directtcp_connect(
     /* set up the sockaddr -- IPv4 only */
     copy_sockaddr(&addr, addrs);
 
-    g_debug("making data connection to %s", str_sockaddr(&addr));
+    str_sockaddr_r(&addr, strsockaddr, sizeof(strsockaddr));
+
+    if (strncmp(strsockaddr,"255.255.255.255:", 16) == 0) {
+	char  buffer[32770];
+	char *s;
+	int   size;
+	char *data_host;
+	int   data_port;
+
+	g_debug("do_directtcp_connect making indirect data connection to %s",
+		strsockaddr);
+	data_port = SU_GET_PORT(&addr);
+	sock = stream_client("localhost", data_port,
+                             STREAM_BUFSIZE, 0, NULL, 0);
+	if (sock < 0) {
+	    xfer_cancel_with_error(elt, "stream_client(): %s", strerror(errno));
+	    goto cancel_wait;
+	}
+	size = full_read(sock, buffer, 32768);
+	if (size < 0 ) {
+	    xfer_cancel_with_error(elt, "failed to read from indirecttcp: %s",
+				   strerror(errno));
+	    goto cancel_wait;
+	}
+	close(sock);
+	buffer[size++] = ' ';
+	buffer[size] = '\0';
+	if ((s = strchr(buffer, ':')) == NULL) {
+	    xfer_cancel_with_error(elt,
+				   "Failed to parse indirect data stream: %s",
+				   buffer);
+	    goto cancel_wait;
+	}
+	*s++ = '\0';
+	data_host = buffer;
+	data_port = atoi(s);
+
+	str_to_sockaddr(data_host, &addr);
+	SU_SET_PORT(&addr, data_port);
+
+	str_sockaddr_r(&addr, strsockaddr, sizeof(strsockaddr));
+    }
+
     sock = socket(SU_GET_FAMILY(&addr), SOCK_STREAM, 0);
+
+    g_debug("do_directtcp_connect making data connection to %s", strsockaddr);
+
     if (sock < 0) {
 	xfer_cancel_with_error(elt,
 	    "socket(): %s", strerror(errno));
@@ -233,7 +288,7 @@ do_directtcp_connect(
 	goto cancel_wait;
     }
 
-    g_debug("connected to %s", str_sockaddr(&addr));
+    g_debug("do_directtcp_connect: connected to %s, fd %d", strsockaddr, sock);
 
     return sock;
 
@@ -319,6 +374,7 @@ pull_and_write(XferElementGlue *self)
     XferElement *elt = XFER_ELEMENT(self);
     int fd = get_write_fd(self);
     self->write_fdp = NULL;
+    crc32_init(&elt->crc);
 
     while (!elt->cancelled) {
 	size_t len;
@@ -330,21 +386,32 @@ pull_and_write(XferElementGlue *self)
 	    break;
 
 	/* write it */
-	if (full_write(fd, buf, len) < len) {
-	    if (!elt->cancelled) {
-		xfer_cancel_with_error(elt,
-		    _("Error writing to fd %d: %s"), fd, strerror(errno));
-		wait_until_xfer_cancelled(elt->xfer);
+	if (!elt->downstream->drain_mode && full_write(fd, buf, len) < len) {
+	    if (elt->downstream->must_drain) {
+		g_debug("Error writing to fd %d: %s", fd, strerror(errno));
+	    } else if (elt->downstream->ignore_broken_pipe && errno == EPIPE) {
+	    } else {
+		if (!elt->cancelled) {
+		    xfer_cancel_with_error(elt,
+			_("Error writing to fd %d: %s"), fd, strerror(errno));
+		    xfer_cancel(elt->xfer);
+		    wait_until_xfer_cancelled(elt->xfer);
+		}
+		amfree(buf);
+		break;
 	    }
-	    amfree(buf);
-	    break;
+	    elt->downstream->drain_mode = TRUE;
 	}
+	crc32_add((uint8_t *)buf, len, &elt->crc);
 
 	amfree(buf);
     }
 
     if (elt->cancelled && elt->expect_eof)
 	xfer_element_drain_buffers(elt->upstream);
+
+    g_debug("xfer-dest-fd CRC: %08x:%lld",
+	    crc32_finish(&elt->crc), (long long)elt->crc.size);
 
     /* close the fd we've been writing, as an EOF signal to downstream, and
      * set it to -1 to avoid accidental re-use */
@@ -361,6 +428,7 @@ read_and_write(XferElementGlue *self)
     int rfd = get_read_fd(self);
     int wfd = get_write_fd(self);
 
+    g_debug("read_and_write: read from %d, write to %d", rfd, wfd);
     while (!elt->cancelled) {
 	size_t len;
 
@@ -380,13 +448,19 @@ read_and_write(XferElementGlue *self)
 	}
 
 	/* write the buffer fully */
-	if (full_write(wfd, buf, len) < len) {
-	    if (!elt->cancelled) {
-		xfer_cancel_with_error(elt,
-		    _("Could not write to fd %d: %s"), wfd, strerror(errno));
-		wait_until_xfer_cancelled(elt->xfer);
+	if (!elt->downstream->drain_mode && full_write(wfd, buf, len) < len) {
+	    if (elt->downstream->must_drain) {
+		g_debug("Could not write to fd %d: %s",  wfd, strerror(errno));
+	    } else if (elt->downstream->ignore_broken_pipe && errno == EPIPE) {
+	    } else {
+		if (!elt->cancelled) {
+		    xfer_cancel_with_error(elt,
+			_("Could not write to fd %d: %s"),
+			wfd, strerror(errno));
+		    wait_until_xfer_cancelled(elt->xfer);
+		}
+		break;
 	    }
-	    break;
 	}
     }
 
@@ -410,6 +484,7 @@ read_and_push(
     XferElement *elt = XFER_ELEMENT(self);
     int fd = get_read_fd(self);
 
+    crc32_init(&elt->crc);
     while (!elt->cancelled) {
 	char *buf = g_malloc(GLUE_BUFFER_SIZE);
 	size_t len;
@@ -434,6 +509,7 @@ read_and_push(
 	    }
 	}
 
+	crc32_add((uint8_t *)buf, len, &elt->crc);
 	xfer_element_push_buffer(elt->downstream, buf, len);
     }
 
@@ -445,6 +521,9 @@ read_and_push(
 
     /* close the read fd, since it's at EOF */
     close_read_fd(self);
+
+    g_debug("xfer-source-fd CRC: %08x:%lld",
+	    crc32_finish(&elt->crc), (long long)elt->crc.size);
 }
 
 static void
@@ -850,7 +929,11 @@ setup_impl(
 
     /* set up ring if desired */
     if (need_ring) {
-	self->ring = g_malloc(sizeof(*self->ring) * GLUE_RING_BUFFER_SIZE);
+	self->ring = g_try_malloc(sizeof(*self->ring) * GLUE_RING_BUFFER_SIZE);
+	if (self->ring == NULL) {
+	    xfer_cancel_with_error(elt, "Can't allocate memory for ring");
+	    return FALSE;
+	}
 	self->ring_used_sem = amsemaphore_new_with_value(0);
 	self->ring_free_sem = amsemaphore_new_with_value(GLUE_RING_BUFFER_SIZE);
     }
@@ -1114,13 +1197,23 @@ push_buffer_impl(
 
 	    /* write the full buffer to the fd, or close on EOF */
 	    if (buf) {
-		if (full_write(fd, buf, len) < len) {
-		    if (!elt->cancelled) {
-			xfer_cancel_with_error(elt,
-			    _("Error writing to fd %d: %s"), fd, strerror(errno));
-			wait_until_xfer_cancelled(elt->xfer);
+		if (!elt->downstream->drain_mode &&
+		    full_write(fd, buf, len) < len) {
+		    if (elt->downstream->must_drain) {
+			g_debug("Error writing to fd %d: %s",
+				fd, strerror(errno));
+		    } else if (elt->downstream->ignore_broken_pipe &&
+			       errno == EPIPE) {
+		    } else {
+			if (!elt->cancelled) {
+			    xfer_cancel_with_error(elt,
+				_("Error writing to fd %d: %s"),
+				fd, strerror(errno));
+			    wait_until_xfer_cancelled(elt->xfer);
+			}
+			/* nothing special to do to handle a cancellation */
 		    }
-		    /* nothing special to do to handle a cancellation */
+		    elt->downstream->drain_mode = TRUE;
 		}
 		amfree(buf);
 	    } else {

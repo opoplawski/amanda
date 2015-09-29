@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -145,7 +146,11 @@ APPLY(CNF_TAPER_PARALLEL_WRITE)\
 APPLY(CNF_RECOVERY_LIMIT) \
 APPLY(CNF_INTERACTIVITY) \
 APPLY(CNF_TAPERSCAN) \
-APPLY(CNF_EJECT_VOLUME)
+APPLY(CNF_EJECT_VOLUME) \
+APPLY(CNF_TMPDIR) \
+APPLY(CNF_REPORT_USE_MEDIA) \
+APPLY(CNF_REPORT_NEXT_MEDIA) \
+APPLY(CNF_REPORT_FORMAT)
 
 amglue_add_enum_tag_fns(confparm_key);
 amglue_add_constants(FOR_ALL_CONFPARM_KEY, confparm_key);
@@ -215,6 +220,7 @@ APPLY(DUMPTYPE_SCRIPTLIST)\
 APPLY(DUMPTYPE_PROPERTY)\
 APPLY(DUMPTYPE_DATA_PATH)\
 APPLY(DUMPTYPE_ALLOW_SPLIT)\
+APPLY(DUMPTYPE_MAX_WARNINGS)\
 APPLY(DUMPTYPE_RECOVERY_LIMIT) \
 APPLY(DUMPTYPE_DUMP_LIMIT)
 
@@ -565,7 +571,8 @@ val_t_to_sv(val_t *val, SV **results) {
 		sv_setpv(results[0], val_t__str(val));
 		return 1;
 
-	    case CONFTYPE_IDENTLIST: {
+	    case CONFTYPE_IDENTLIST:
+	    case CONFTYPE_STR_LIST: {
 		AV *ilist = newAV();
 
 		identlist_t il;
@@ -643,6 +650,7 @@ fail:
     SP += argvi; PUTBACK;
     nresults = val_t_to_sv($1, results);
     SPAGAIN; SP -= argvi;
+    EXTEND(SP, nresults);
 
     /* add val_t_to_sv's results to the stack */
     for (iter = results; nresults; iter++, nresults--) {
@@ -658,6 +666,7 @@ fail:
 %typemap (out) GSList * {
     GSList *it = $1;
 
+    EXTEND(SP, g_slist_length(it));
     while (it) {
 	$result = sv_2mortal(newSVpv(it->data, 0));
 	argvi++;
@@ -673,6 +682,14 @@ fail:
 %typemap (out) val_t_strs {
     char **it = $1;
 
+    int count = 0;
+    while (it && *it) {
+	count++;
+	it++;
+    }
+    EXTEND(SP, count);
+
+    it = $1;
     while (it && *it) {
 	$result = sv_2mortal(newSVpv(*it, 0));
 	argvi++;
@@ -693,7 +710,7 @@ typedef char **val_t_strs;
 val_t_strs getconf_byname_strs(char *key, int str_needs_quotes) {
     val_t *val = getconf_byname(key);
     if (!val) return NULL;
-    return val_t_display_strs(val, str_needs_quotes);
+    return val_t_display_strs(val, str_needs_quotes, FALSE, FALSE);
 }
 %}
 
@@ -879,6 +896,7 @@ void config_clear_errors(void);
 %typemap (argout) GSList **ERRLIST {
     GSList *it = *$1;
 
+    EXTEND(SP, g_slist_length(it));
     while (it) {
 	$result = sv_2mortal(newSVpv(it->data, 0));
 	argvi++;
@@ -909,7 +927,7 @@ amglue_export_tag(init,
  * Miscellaneous
  */
 
-void dump_configuration(void);
+void dump_configuration(gboolean print_default, gboolean print_source);
 %newobject config_dir_relative;
 char *config_dir_relative(char *filename);
 char *taperalgo2str(taperalgo_t taperalgo);
@@ -934,5 +952,6 @@ sub string_to_boolean {
 
 amglue_export_ok(string_to_boolean);
 
+%newobject amandaify_property_name;
 gchar * amandaify_property_name(const gchar *name);
 amglue_export_ok(amandaify_property_name);

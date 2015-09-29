@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1999 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -601,8 +602,12 @@ stream_read_sync_callback(
         security_stream_seterror(&bs->secstr, "%s", strerror(errno));
     bs->len = n;
     sync_pktlen = bs->len;
-    sync_pkt = malloc(sync_pktlen);
-    memcpy(sync_pkt, bs->databuf, sync_pktlen);
+    if (sync_pktlen > 0) {
+	sync_pkt = malloc(sync_pktlen);
+	memcpy(sync_pkt, bs->databuf, sync_pktlen);
+    } else {
+	sync_pkt = NULL;
+    }
 }
 
 /*
@@ -634,14 +639,12 @@ stream_read_callback(
 
     assert(bs != NULL);
 
-    /*
-     * Remove the event first, in case they reschedule it in the callback.
-     */
-    bsd_stream_read_cancel(bs);
     do {
 	n = read(bs->fd, bs->databuf, SIZEOF(bs->databuf));
     } while ((n < 0) && ((errno == EINTR) || (errno == EAGAIN)));
 
+    if (n <= 0)
+	bsd_stream_read_cancel(bs);
     if (n < 0)
 	security_stream_seterror(&bs->secstr, "%s", strerror(errno));
 

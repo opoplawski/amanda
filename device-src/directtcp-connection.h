@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2009 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -34,7 +35,7 @@ GType	directtcp_connection_get_type	(void);
  * Parent class for connections
  */
 
-typedef struct DirectTCPConnection_ {
+typedef struct DirectTCPConnection {
     GObject __parent__;
 
     gboolean closed;
@@ -59,7 +60,7 @@ typedef struct DirectTCPConnectionClass_ {
      * @returns: error message on error, NULL for no error (caller should
      *  free the error message)
      */
-    char *(* close)(struct DirectTCPConnection_ *self);
+    char *(* close)(struct DirectTCPConnection *self);
 } DirectTCPConnectionClass;
 
 /* Method Stubs */

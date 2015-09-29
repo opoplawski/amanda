@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -71,6 +72,7 @@ typedef struct info_s {
 #	define FORCE_FULL	1	/* force level 0 at next run */
 #	define FORCE_BUMP	2	/* force bump at next run */
 #	define FORCE_NO_BUMP	4	/* force no-bump at next run */
+#	define FORCE_LEVEL_1	8	/* force level 1 at next run */
     perf_t  full;
     perf_t  incr;
     double comp_avgs_full[64];

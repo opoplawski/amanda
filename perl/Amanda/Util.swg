@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2007, 2008, 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -36,7 +37,10 @@
 #include "../common-src/util.h"
 #include "file.h"
 #include "sockaddr-util.h"
+#include "match.h"
 %}
+
+void glib_init(void);
 
 %perlcode %{
 
@@ -75,8 +79,12 @@ sub setup_application {
     safe_cd(); # (also sets umask)
     check_std_fds();
 
+    make_crc_table();
+
     # set up debugging, now that we have a name, type, and context
     debug_init();
+
+    glib_init();
 
     # ignore SIGPIPE
     $SIG{'PIPE'} = 'IGNORE';
@@ -289,8 +297,13 @@ sub safe_overwrite_file {
 %typemap (out) GPtrArray * {
     if ($1) {
 	guint i;
-	for (i = 0; i < $1->len; i++) {
-	    $result = sv_2mortal(newSVpv(g_ptr_array_index($1, i), 0));
+	gpointer *pdata;
+
+	EXTEND(sp, $1->len);
+	for (i = 0, pdata = $1->pdata; i < $1->len; i++) {
+	    char *str = *pdata++;
+	    $result = sv_2mortal(newSVpv(str, 0));
+	    g_free(str);
 	    argvi++;
 	}
 	g_ptr_array_free($1, TRUE);
@@ -315,8 +328,10 @@ sub safe_overwrite_file {
 
 	for (iter = $1; *iter; iter++) {
 	    $result = sv_2mortal(newSVpv(*iter, 0));
+	    g_free(*iter);
 	    argvi++;
 	}
+	g_free($1);
     }
 }
 
@@ -338,12 +353,16 @@ char *perl_hexdecode_string(const char *str) {
 %}
 amglue_export_tag(encoding, hexencode hexdecode);
 
+%newobject sanitise_filename;
 char *sanitise_filename(char *inp);
+%newobject quote_string;
 char *quote_string(char *);
+%newobject unquote_string;
 char *unquote_string(char *);
 GPtrArray *expand_braced_alternates(char *);
 %newobject collapse_braced_alternates;
 char *collapse_braced_alternates(GPtrArray *source);
+%newobject split_quoted_strings;
 gchar **split_quoted_strings(const gchar *string);
 amglue_export_tag(quoting, quote_string unquote_string skip_quoted_string
 		sanitise_filename split_quoted_strings split_quoted_strings_friendly);
@@ -441,10 +460,15 @@ set_blocking(int fd, gboolean blocking)
 /* SWIG prepends the struct name to the member function name, which
  * conflicts with the underlying function names */
 
-typedef struct file_lock {
+typedef struct {
     %extend {
+	%newobject file_lock;
 	file_lock(const char *filename) {
 	    return file_lock_new(filename);
+	}
+
+	~file_lock() {
+	    file_lock_free(self);
 	}
 
 	~locked_data() {
@@ -467,7 +491,7 @@ typedef struct file_lock {
 	%typemap(out) (SV *) { $result = $1; argvi++; };
 	SV *data() {
 	    if (self->data) {
-		return newSVpvn(self->data, self->len);
+		return sv_2mortal(newSVpvn(self->data, self->len));
 	    } else {
 		return &PL_sv_undef;
 	    }
@@ -545,7 +569,7 @@ socketfd stream_accept(int fd, int timeout, size_t sendsize, size_t recvsize);
 %newobject check_security_fd;
 %rename(check_security) check_security_fd;
 %inline %{
-char *check_security_fd(int fd, char *userstr)
+char *check_security_fd(int fd, char *userstr, char *service)
 {
     socklen_t_equiv i;
     struct sockaddr_in addr;
@@ -566,7 +590,7 @@ char *check_security_fd(int fd, char *userstr)
     }
 
     /* call out to check_security */
-    if (!check_security((sockaddr_union *)&addr, userstr, 0, &errstr))
+    if (!check_security((sockaddr_union *)&addr, userstr, 0, &errstr, service))
 	return errstr;
 
     return NULL;
@@ -634,7 +658,7 @@ sub unmarshal_tapespec {
 %}
 
 amglue_export_ok(
-    match_host match_disk match_datestamp match_level
+    match_host match_disk match_datestamp match_level match_labelstr_expr
 );
 
 gboolean match_host(char *pat, char *value);
@@ -642,6 +666,20 @@ gboolean match_disk(char *pat, char *value);
 gboolean match_datestamp(char *pat, char *value);
 gboolean match_level(char *pat, char *value);
 
+%perlcode %{
+sub match_labelstr_expr {
+    my $labelstr_expr = shift;
+    my $label = shift;
+
+    return $label =~ /$labelstr_expr/;
+}
+
+%}
+
+void make_crc_table(void);
+void crc32_init(crc_t *crc);
+void crc32_add(uint8_t *buf, size_t len, crc_t *crc);
+uint32_t crc32_finish(crc_t *crc);
 
 /* -------------------------------------------------------------------------
  * Functions below this line are only meant to be called within this module;

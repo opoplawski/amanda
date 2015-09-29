@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+ * Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -38,7 +39,7 @@ GType	ndmp_connection_get_type	(void);
  * Parent class for connections
  */
 
-typedef struct NDMPConnection_ {
+typedef struct NDMPConnection {
     GObject __parent__;
 
     /* the ndmconn - interface to ndmlib */
@@ -223,6 +224,21 @@ gboolean ndmp_connection_wait_for_notify(
 	/* NDMP_NOTIFY_MOVER_PAUSED */
 	ndmp9_mover_pause_reason *mover_pause_reason,
 	guint64 *mover_pause_seek_position);
+
+/* Synchronous notification interface.  This handles all types of notification,
+ * returning the result in the appropriate output parameter. */
+int ndmp_connection_wait_for_notify_with_cond(
+	NDMPConnection *self,
+	/* NDMP_NOTIFY_DATA_HALTED */
+	ndmp9_data_halt_reason *data_halt_reason,
+	/* NDMP_NOTIFY_MOVER_HALTED */
+	ndmp9_mover_halt_reason *mover_halt_reason,
+	/* NDMP_NOTIFY_MOVER_PAUSED */
+	ndmp9_mover_pause_reason *mover_pause_reason,
+	guint64 *mover_pause_seek_position,
+	int    *cancelled,
+	GMutex *abort_mutex,
+	GCond *abort_cond);
 
 /*
  * Constructor

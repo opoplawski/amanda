@@ -1,6 +1,7 @@
 /*
  * Amanda, The Advanced Maryland Automatic Network Disk Archiver
  * Copyright (c) 1991-1998 University of Maryland at College Park
+ * Copyright (c) 2007-2013 Zmanda, Inc.  All Rights Reserved.
  * All Rights Reserved.
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
@@ -281,13 +282,19 @@ main(
 		    }
 		}
 		if (!matching) {
+		    struct stat sbuf;
 		    char *path, *qpath;
+
 		    path = stralloc2(indexdir, names[i]);
 		    qpath = quote_string(path);
-		    dbprintf("rm %s\n", qpath);
-		    if(amtrmidx_debug == 0 && unlink(path) == -1) {
-			dbprintf(_("Error removing %s: %s\n"),
-				  qpath, strerror(errno));
+		    if(lstat(path, &sbuf) != -1
+			&& ((sbuf.st_mode & S_IFMT) == S_IFREG)
+			&& ((time_t)sbuf.st_mtime < tmp_time)) {
+			dbprintf("rm %s\n", qpath);
+		        if(amtrmidx_debug == 0 && unlink(path) == -1) {
+			    dbprintf(_("Error removing %s: %s\n"),
+				      qpath, strerror(errno));
+		        }
 		    }
 		    amfree(qpath);
 		    amfree(path);
@@ -305,7 +312,9 @@ main(
     amfree(conf_indexdir);
     free_find_result(&output_find);
     clear_tapelist();
-    free_disklist(&diskl);
+    unload_disklist();
+    diskl.head = NULL;
+    diskl.tail = NULL;
 
     dbclose();
 

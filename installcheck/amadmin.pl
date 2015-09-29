@@ -1,8 +1,9 @@
-# Copyright (c) 2009, 2010 Zmanda, Inc.  All Rights Reserved.
+# Copyright (c) 2009-2013 Zmanda, Inc.  All Rights Reserved.
 #
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License version 2 as published
-# by the Free Software Foundation.
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -16,7 +17,7 @@
 # Contact information: Zmanda Inc, 465 S Mathilda Ave, Suite 300
 # Sunnyvale, CA 94086, USA, or: http://www.zmanda.com
 
-use Test::More tests => 17;
+use Test::More tests => 23;
 use strict;
 use warnings;
 
@@ -120,3 +121,28 @@ amadmin: localhost:\\\\windows\\share-b is set to a forced level 0 at next run.$
 like(run_get('amadmin TESTCONF force localhost share-a share-a'),
    qr/^amadmin: localhost:\\\\windows\\share-a is set to a forced level 0 at next run.$/,
    "shell 13");
+
+like(run_get('amadmin TESTCONF balance --days 12'),
+   qr/No data to report on yet.$/,
+   "shell 14");
+
+like(run_get('amadmin TESTCONF force =localhost share-a'),
+   qr/^amadmin: localhost:\\\\windows\\share-a is set to a forced level 0 at next run.$/,
+   "shell 15");
+
+like(run_get('amadmin TESTCONF force =localhost =share-a'),
+   qr/^Argument '=share-a' matches neither a host nor a disk.$/,
+   "shell 16");
+
+like(run_get('amadmin --exact-match TESTCONF force localhost share-a'),
+   qr/^Argument '=share-a' matches neither a host nor a disk.$/,
+   "shell 17");
+
+like(run_get('amadmin TESTCONF force =localhost \'=\\\\windows\\share-a\''),
+   qr/^amadmin: localhost:\\\\windows\\share-a is set to a forced level 0 at next run.$/,
+   "shell 18");
+
+like(run_get('amadmin --exact-match TESTCONF force localhost \'\\\\windows\\share-a\''),
+   qr/^amadmin: localhost:\\\\windows\\share-a is set to a forced level 0 at next run.$/,
+   "shell 19");
+
