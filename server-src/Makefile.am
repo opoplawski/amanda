@@ -51,7 +51,8 @@ sbin_SCRIPTS_PERL = \
 	    amdump \
 	    amflush \
 	    amreindex \
-	    amstatus
+	    amstatus \
+	    amdiskflush
 if WANT_RESTORE
 amlibexec_SCRIPTS_PERL += \
 	    amidxtaped
