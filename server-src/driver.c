@@ -2132,6 +2132,7 @@ start_degraded_mode(
 		sp->dumpdate = g_strdup(sp->degr_dumpdate);
 		sp->est_nsize = sp->degr_nsize;
 		sp->est_csize = sp->degr_csize;
+		sp->est_size = sp->degr_csize;
 		sp->est_time = sp->degr_time;
 		sp->est_kps  = sp->degr_kps;
 		enqueue_sched(&newq, sp);
